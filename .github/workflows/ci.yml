@@ -17,7 +17,7 @@ concurrency:
 jobs:
   checks:
     name: Checks
-    uses: manic-systems/workflows/.github/workflows/rust-checks.yml@d93951cf50722594dc1d64602eb9453dc7da2fb6 # v2.3.0
+    uses: manic-systems/workflows/.github/workflows/rust-checks.yml@401b4c5150acdf9c1b33508dcda7a021c5dbed67 # v2.3.1
     with:
       os: ubuntu-latest
       flake-check: false
@@ -42,7 +42,7 @@ jobs:
     permissions:
       actions: write
       contents: read
-    uses: manic-systems/workflows/.github/workflows/nix-checks.yml@d93951cf50722594dc1d64602eb9453dc7da2fb6 # v2.3.0
+    uses: manic-systems/workflows/.github/workflows/nix-checks.yml@401b4c5150acdf9c1b33508dcda7a021c5dbed67 # v2.3.1
     with:
       os: ${{ matrix.os }}
       flake-check-command: nix flake check --no-build
@@ -53,7 +53,7 @@ jobs:
 
   actions:
     name: Actions Lint
-    uses: manic-systems/workflows/.github/workflows/actions-lint.yml@d93951cf50722594dc1d64602eb9453dc7da2fb6 # v2.3.0
+    uses: manic-systems/workflows/.github/workflows/actions-lint.yml@401b4c5150acdf9c1b33508dcda7a021c5dbed67 # v2.3.1
 
   required:
     name: Required Checks
