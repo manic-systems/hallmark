@@ -22,12 +22,19 @@
 
 use std::{
   collections::BTreeMap,
-  io::{self, Read, Write},
+  io::{
+    self,
+    Read,
+    Write,
+  },
 };
 #[cfg(unix)]
 use std::{
   ffi::OsStr,
-  fs::{self, File},
+  fs::{
+    self,
+    File,
+  },
   path::Path,
 };
 
@@ -285,12 +292,7 @@ impl<'writer, W: Write + ?Sized> Node<'writer, W> {
   ///
   /// Propagates I/O errors, and fails with [`io::ErrorKind::UnexpectedEof`]
   /// if `body` yields fewer than `size` bytes.
-  pub fn file(
-    self,
-    executable: bool,
-    size: u64,
-    body: &mut dyn Read,
-  ) -> io::Result<()> {
+  pub fn file(self, executable: bool, size: u64, body: &mut dyn Read) -> io::Result<()> {
     write_padded_token(self.w, b"(")?;
     write_padded_token(self.w, b"type")?;
     write_padded_token(self.w, b"regular")?;
@@ -457,21 +459,21 @@ where
 #[cfg(unix)]
 #[expect(
   clippy::filetype_is_file,
-  reason = "symlinks and directories return earlier, so this rejects only \
-            special files"
+  reason = "symlinks and directories return earlier, so this rejects only special files"
 )]
 fn dump_node<W>(node: Node<'_, W>, path: &Path) -> io::Result<()>
 where
   W: Write + ?Sized,
 {
   use std::os::unix::{
-    ffi::{OsStrExt as _, OsStringExt as _},
+    ffi::{
+      OsStrExt as _,
+      OsStringExt as _,
+    },
     fs::PermissionsExt as _,
   };
 
-  let with_path = |err: io::Error| {
-    io::Error::new(err.kind(), format!("{}: {err}", path.display()))
-  };
+  let with_path = |err: io::Error| io::Error::new(err.kind(), format!("{}: {err}", path.display()));
   let file_type = fs::symlink_metadata(path).map_err(with_path)?.file_type();
 
   if file_type.is_symlink() {
@@ -522,12 +524,7 @@ pub trait Visitor {
   /// # Errors
   ///
   /// Any error returned aborts the walk and surfaces from [`read`].
-  fn visit_file(
-    &mut self,
-    _executable: bool,
-    _size: u64,
-    _body: &mut dyn Read,
-  ) -> io::Result<()> {
+  fn visit_file(&mut self, _executable: bool, _size: u64, _body: &mut dyn Read) -> io::Result<()> {
     Ok(())
   }
 
@@ -631,11 +628,7 @@ where
   read_node(reader, visitor, 0)
 }
 
-fn read_node<R, V>(
-  reader: &mut R,
-  visitor: &mut V,
-  depth: usize,
-) -> io::Result<()>
+fn read_node<R, V>(reader: &mut R, visitor: &mut V, depth: usize) -> io::Result<()>
 where
   R: Read + ?Sized,
   V: Visitor,
@@ -693,11 +686,7 @@ where
   read_padding(reader, size)
 }
 
-fn read_directory<R, V>(
-  reader: &mut R,
-  visitor: &mut V,
-  depth: usize,
-) -> io::Result<()>
+fn read_directory<R, V>(reader: &mut R, visitor: &mut V, depth: usize) -> io::Result<()>
 where
   R: Read + ?Sized,
   V: Visitor,
@@ -745,12 +734,7 @@ impl TreeBuilder {
 }
 
 impl Visitor for TreeBuilder {
-  fn visit_file(
-    &mut self,
-    executable: bool,
-    _size: u64,
-    body: &mut dyn Read,
-  ) -> io::Result<()> {
+  fn visit_file(&mut self, executable: bool, _size: u64, body: &mut dyn Read) -> io::Result<()> {
     let mut contents = Vec::new();
     body.read_to_end(&mut contents)?;
     self.place(Entry::File {
@@ -986,8 +970,7 @@ mod tests {
     let root = tempfile::tempdir().unwrap();
     let path = root.path();
     fs::write(path.join("exe"), "#!/bin/sh").unwrap();
-    fs::set_permissions(path.join("exe"), fs::Permissions::from_mode(0o755))
-      .unwrap();
+    fs::set_permissions(path.join("exe"), fs::Permissions::from_mode(0o755)).unwrap();
     symlink("exe", path.join("link")).unwrap();
     fs::DirBuilder::new().create(path.join("sub")).unwrap();
     fs::write(path.join("sub/f"), "abc").unwrap();
@@ -1008,8 +991,7 @@ mod tests {
     }
     let mut nar = Vec::new();
     dump(&mut nar, root.path()).unwrap();
-    let Entry::Directory(entries) = read_nar(&mut nar.as_slice()).unwrap()
-    else {
+    let Entry::Directory(entries) = read_nar(&mut nar.as_slice()).unwrap() else {
       panic!("expected a directory");
     };
     let names: Vec<_> = entries.keys().map(Vec::as_slice).collect();

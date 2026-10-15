@@ -1,20 +1,23 @@
 use hallmark::{
   narinfo::NarInfo,
   nixbase32,
-  store_path::{Method, StorePath, build_ca_path, build_text_path},
+  store_path::{
+    Method,
+    StorePath,
+    build_ca_path,
+    build_text_path,
+  },
 };
 
-const FULL: &str =
-  "StorePath: \
-   /nix/store/00bgd045z0d4icpbc2yyz4gx48ak44la-net-tools-1.60\nURL: \
-   nar/1q8w.nar.xz\nCompression: xz\nFileHash: sha256:1q8wabc\nFileSize: \
-   4096\nNarHash: \
-   sha256:0mdqa9w1p6cmli6976v4wi0sw9r4p5prkj7lzfd1877wk11c9c73\nNarSize: \
-   20480\nReferences: 00bgd045z0d4icpbc2yyz4gx48ak44la-net-tools-1.60 \
-   7rjj0i6b2cvz01iw7hd1xk5f0r48rd8w-glibc-2.39\nDeriver: \
-   xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx-net-tools-1.60.drv\nSig: \
-   cache.nixos.org-1:aaaa\nSig: cache.example.org-1:bbbb\nCA: \
-   fixed:r:sha256:0mdqa9w1p6cmli6976v4wi0sw9r4p5prkj7lzfd1877wk11c9c73\n";
+const FULL: &str = "StorePath: /nix/store/00bgd045z0d4icpbc2yyz4gx48ak44la-net-tools-1.60\nURL: \
+                    nar/1q8w.nar.xz\nCompression: xz\nFileHash: sha256:1q8wabc\nFileSize: \
+                    4096\nNarHash: \
+                    sha256:0mdqa9w1p6cmli6976v4wi0sw9r4p5prkj7lzfd1877wk11c9c73\nNarSize: \
+                    20480\nReferences: 00bgd045z0d4icpbc2yyz4gx48ak44la-net-tools-1.60 \
+                    7rjj0i6b2cvz01iw7hd1xk5f0r48rd8w-glibc-2.39\nDeriver: \
+                    xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx-net-tools-1.60.drv\nSig: \
+                    cache.nixos.org-1:aaaa\nSig: cache.example.org-1:bbbb\nCA: \
+                    fixed:r:sha256:0mdqa9w1p6cmli6976v4wi0sw9r4p5prkj7lzfd1877wk11c9c73\n";
 
 #[test]
 fn full_narinfo_roundtrips_canonically() {
@@ -46,8 +49,7 @@ fn minimal_narinfo_omitting_optional_fields() {
 
 #[test]
 fn narinfo_tolerates_unknown_keys_and_blank_lines() {
-  let text = "StorePath: \
-              /nix/store/00bgd045z0d4icpbc2yyz4gx48ak44la-x\n\nURL: \
+  let text = "StorePath: /nix/store/00bgd045z0d4icpbc2yyz4gx48ak44la-x\n\nURL: \
               nar/x.nar\nSomethingNew: ignore me\nCompression: zstd\nNarHash: \
               sha256:zzz\nNarSize: 1\n";
   let ni = NarInfo::parse_str(text).unwrap();
@@ -59,8 +61,8 @@ fn narinfo_tolerates_unknown_keys_and_blank_lines() {
 fn compression_variants_parse() {
   for compression in ["xz", "zstd", "bzip2", "none", "br"] {
     let text = format!(
-      "StorePath: /nix/store/00bgd045z0d4icpbc2yyz4gx48ak44la-x\nURL: \
-       u\nCompression: {compression}\nNarHash: sha256:z\nNarSize: 1\n"
+      "StorePath: /nix/store/00bgd045z0d4icpbc2yyz4gx48ak44la-x\nURL: u\nCompression: \
+       {compression}\nNarHash: sha256:z\nNarSize: 1\n"
     );
     assert_eq!(NarInfo::parse_str(&text).unwrap().compression, compression);
   }
@@ -77,11 +79,10 @@ fn text_path_known_vector() {
 
 #[test]
 fn recursive_path_with_reference_known_vector() {
-  let digest: [u8; 32] =
-    nixbase32::decode(b"1xqkzcb3909fp07qngljr4wcdnrh1gdam1m2n29i6hhrxlmkgkv1")
-      .unwrap()
-      .try_into()
-      .unwrap();
+  let digest: [u8; 32] = nixbase32::decode(b"1xqkzcb3909fp07qngljr4wcdnrh1gdam1m2n29i6hhrxlmkgkv1")
+    .unwrap()
+    .try_into()
+    .unwrap();
   let path = build_ca_path(
     Method::Recursive,
     &digest,
@@ -108,8 +109,7 @@ fn flat_path_is_valid_and_rejects_references() {
 #[test]
 fn self_reference_changes_recursive_path() {
   let digest = [0x22_u8; 32];
-  let without =
-    build_ca_path(Method::Recursive, &digest, "n", &[], false).unwrap();
+  let without = build_ca_path(Method::Recursive, &digest, "n", &[], false).unwrap();
   let with = build_ca_path(Method::Recursive, &digest, "n", &[], true).unwrap();
   assert_ne!(without.as_str(), with.as_str());
 }

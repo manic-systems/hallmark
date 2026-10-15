@@ -240,10 +240,8 @@ mod tests {
   use super::*;
 
   fn keypair(seed: [u8; 32], name: &str) -> SecretKey {
-    let keypair =
-      ed25519_compact::KeyPair::from_seed(ed25519_compact::Seed::new(seed));
-    SecretKey::parse(&format!("{name}:{}", base64::encode(keypair.sk.as_ref())))
-      .unwrap()
+    let keypair = ed25519_compact::KeyPair::from_seed(ed25519_compact::Seed::new(seed));
+    SecretKey::parse(&format!("{name}:{}", base64::encode(keypair.sk.as_ref()))).unwrap()
   }
 
   fn sample() -> NarInfo {

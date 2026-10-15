@@ -1,5 +1,12 @@
-use hallmark::{narinfo::NarInfo, nixbase32};
-use proptest::{collection::vec, option::of, prelude::*};
+use hallmark::{
+  narinfo::NarInfo,
+  nixbase32,
+};
+use proptest::{
+  collection::vec,
+  option::of,
+  prelude::*,
+};
 
 proptest! {
   #[test]

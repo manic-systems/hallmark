@@ -3,8 +3,7 @@
 
 use thiserror::Error;
 
-const ALPHABET: &[u8; 64] =
-  b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 #[expect(clippy::cast_possible_truncation, reason = "i ranges over 0..64")]
 const DECODE: [u8; 256] = {

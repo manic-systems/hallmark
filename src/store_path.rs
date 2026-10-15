@@ -128,9 +128,7 @@ impl<'path> StorePathRef<'path> {
   ///
   /// Returns [`ParseStorePathError`] if the hash is malformed, the `-`
   /// separator is missing, or the name is invalid.
-  pub fn from_bytes(
-    component: &'path str,
-  ) -> Result<Self, ParseStorePathError> {
+  pub fn from_bytes(component: &'path str) -> Result<Self, ParseStorePathError> {
     validate_component(component)?;
     Ok(Self { path: component })
   }
@@ -142,9 +140,7 @@ impl<'path> StorePathRef<'path> {
   /// Returns [`ParseStorePathError::MissingStoreDir`] if the
   /// `/nix/store/` prefix is absent; otherwise returns the component errors
   /// from [`StorePathRef::from_bytes`].
-  pub fn from_absolute_path(
-    path: &'path str,
-  ) -> Result<Self, ParseStorePathError> {
+  pub fn from_absolute_path(path: &'path str) -> Result<Self, ParseStorePathError> {
     let component = path
       .strip_prefix(STORE_DIR_WITH_SLASH)
       .ok_or(ParseStorePathError::MissingStoreDir)?;
@@ -159,8 +155,7 @@ impl<'path> StorePathRef<'path> {
   )]
   #[expect(
     clippy::string_slice,
-    reason = "validated components are ASCII, so every index is a char \
-              boundary"
+    reason = "validated components are ASCII, so every index is a char boundary"
   )]
   #[must_use]
   pub fn hash(&self) -> &'path str {
@@ -171,8 +166,7 @@ impl<'path> StorePathRef<'path> {
   /// The name that follows the `-`.
   #[expect(
     clippy::string_slice,
-    reason = "validated components are ASCII, so every index is a char \
-              boundary"
+    reason = "validated components are ASCII, so every index is a char boundary"
   )]
   #[must_use]
   pub fn name(&self) -> &'path str {
@@ -184,14 +178,12 @@ impl<'path> StorePathRef<'path> {
   #[expect(
     clippy::missing_panics_doc,
     clippy::expect_used,
-    reason = "the hash was decoded during validation, so decoding it again is \
-              infallible"
+    reason = "the hash was decoded during validation, so decoding it again is infallible"
   )]
   #[must_use]
   pub fn digest(&self) -> [u8; DIGEST_SIZE] {
     let mut out = [0_u8; DIGEST_SIZE];
-    let decoded = nixbase32::decode(self.hash().as_bytes())
-      .expect("validated on construction");
+    let decoded = nixbase32::decode(self.hash().as_bytes()).expect("validated on construction");
     out.copy_from_slice(&decoded);
     out
   }
@@ -245,10 +237,7 @@ impl StorePath {
   ) -> Result<Self, ParseStorePathError> {
     validate_name(name)?;
     Ok(Self {
-      path: format!(
-        "{STORE_DIR_WITH_SLASH}{}-{name}",
-        nixbase32::encode(digest)
-      ),
+      path: format!("{STORE_DIR_WITH_SLASH}{}-{name}", nixbase32::encode(digest)),
     })
   }
 
@@ -413,11 +402,7 @@ fn compress_hash<const N: usize>(input: &[u8]) -> [u8; N] {
   out
 }
 
-fn format_references(
-  ty: &str,
-  references: &[&str],
-  has_self_ref: bool,
-) -> String {
+fn format_references(ty: &str, references: &[&str], has_self_ref: bool) -> String {
   let mut out = ty.to_owned();
   for reference in references {
     out.push(':');
@@ -434,10 +419,8 @@ fn from_fingerprint_parts(
   inner_digest: &[u8; 32],
   name: &str,
 ) -> Result<StorePath, BuildError> {
-  let fingerprint =
-    format!("{ty}:sha256:{}:{STORE_DIR}:{name}", hex_lower(inner_digest));
-  let compressed =
-    compress_hash::<DIGEST_SIZE>(&Hash::hash(fingerprint.as_bytes()));
+  let fingerprint = format!("{ty}:sha256:{}:{STORE_DIR}:{name}", hex_lower(inner_digest));
+  let compressed = compress_hash::<DIGEST_SIZE>(&Hash::hash(fingerprint.as_bytes()));
   StorePath::from_digest_and_name(&compressed, name).map_err(|source| {
     BuildError::Name {
       name: name.to_owned(),
@@ -477,9 +460,7 @@ pub fn build_ca_path(
       if !references.is_empty() {
         return Err(BuildError::FlatWithReferences);
       }
-      let inner = Hash::hash(
-        format!("fixed:out:sha256:{}:", hex_lower(digest)).as_bytes(),
-      );
+      let inner = Hash::hash(format!("fixed:out:sha256:{}:", hex_lower(digest)).as_bytes());
       from_fingerprint_parts("output:out", &inner, name)
     },
   }
@@ -506,8 +487,7 @@ mod tests {
   #[test]
   fn parse_valid() {
     let store_path = StorePath::parse(
-      "/nix/store/00bgd045z0d4icpbc2yyz4gx48ak44la-net-tools-1.\
-       60_p20170221182432",
+      "/nix/store/00bgd045z0d4icpbc2yyz4gx48ak44la-net-tools-1.60_p20170221182432",
     )
     .unwrap();
     assert_eq!(store_path.hash(), "00bgd045z0d4icpbc2yyz4gx48ak44la");
@@ -528,14 +508,12 @@ mod tests {
       StorePath::parse("/nix/store/00bgd045z0d4icpbc2yy-"),
       Err(ParseStorePathError::Length)
     );
-    StorePath::parse("/nix/store/00bgd045z0d4icpbc2yyz4gx48aku4la-net-tools")
-      .unwrap_err();
+    StorePath::parse("/nix/store/00bgd045z0d4icpbc2yyz4gx48aku4la-net-tools").unwrap_err();
     assert_eq!(
       StorePathRef::from_bytes("00bgd045z0d4icpbc2yyz4gx48ak44lanet-tools"),
       Err(ParseStorePathError::MissingDash)
     );
-    StorePath::parse("/nix/store/00bgd045z0d4icpbc2yyz4gx48ak44la-net/tools")
-      .unwrap_err();
+    StorePath::parse("/nix/store/00bgd045z0d4icpbc2yyz4gx48ak44la-net/tools").unwrap_err();
   }
 
   #[test]
@@ -602,9 +580,7 @@ mod tests {
   #[test]
   fn text_path_with_references() {
     let inner = build_text_path("foo", b"bar", &[]).unwrap();
-    let outer =
-      build_text_path("baz", inner.as_str().as_bytes(), &[inner.as_str()])
-        .unwrap();
+    let outer = build_text_path("baz", inner.as_str().as_bytes(), &[inner.as_str()]).unwrap();
     assert_eq!(
       outer.as_str(),
       "/nix/store/5xd714cbfnkz02h2vbsj4fm03x3f15nf-baz"
@@ -613,12 +589,11 @@ mod tests {
 
   #[test]
   fn ca_source_path_with_reference() {
-    let digest: [u8; 32] = nixbase32::decode(
-      b"1xqkzcb3909fp07qngljr4wcdnrh1gdam1m2n29i6hhrxlmkgkv1",
-    )
-    .unwrap()
-    .try_into()
-    .unwrap();
+    let digest: [u8; 32] =
+      nixbase32::decode(b"1xqkzcb3909fp07qngljr4wcdnrh1gdam1m2n29i6hhrxlmkgkv1")
+        .unwrap()
+        .try_into()
+        .unwrap();
     let store_path = build_ca_path(
       Method::Recursive,
       &digest,

@@ -1,6 +1,9 @@
 //! The string Nix signs for a store path.
 
-use crate::{narinfo::NarInfo, nixbase32};
+use crate::{
+  narinfo::NarInfo,
+  nixbase32,
+};
 
 const fn nibble(digit: u8) -> Option<u8> {
   match digit {
@@ -119,8 +122,7 @@ mod tests {
 
   #[test]
   fn normalizes_attic_hex_hash() {
-    let hex =
-      "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+    let hex = "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
     let b32 = "sha256:0mdqa9w1p6cmli6976v4wi0sw9r4p5prkj7lzfd1877wk11c9c73";
     assert_eq!(normalize_nar_hash(hex), b32);
     assert_eq!(normalize_nar_hash(b32), b32);

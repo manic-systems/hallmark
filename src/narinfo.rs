@@ -3,7 +3,12 @@
 
 use std::{
   fmt,
-  io::{self, BufRead as _, BufReader, Read},
+  io::{
+    self,
+    BufRead as _,
+    BufReader,
+    Read,
+  },
   num::ParseIntError,
 };
 
@@ -104,8 +109,7 @@ impl NarInfo {
           })?;
         },
         "References" if !value.is_empty() => {
-          narinfo.references =
-            value.split_whitespace().map(str::to_owned).collect();
+          narinfo.references = value.split_whitespace().map(str::to_owned).collect();
         },
         "Deriver" if !value.is_empty() => {
           narinfo.deriver = Some(value.to_owned());
@@ -169,12 +173,10 @@ mod tests {
   use super::*;
 
   const SAMPLE: &str =
-    "StorePath: \
-     /nix/store/00bgd045z0d4icpbc2yyz4gx48ak44la-net-tools-1.60\nURL: \
-     nar/abc.nar.xz\nCompression: xz\nFileHash: sha256:abc\nFileSize: \
-     42\nNarHash: sha256:def\nNarSize: 123\nReferences: \
-     00bgd045z0d4icpbc2yyz4gx48ak44la-net-tools-1.60 foo-dep\nDeriver: \
-     xxx.drv\nSig: cache.example.org:AAAA\nCA: fixed:r:sha256:0000\n";
+    "StorePath: /nix/store/00bgd045z0d4icpbc2yyz4gx48ak44la-net-tools-1.60\nURL: \
+     nar/abc.nar.xz\nCompression: xz\nFileHash: sha256:abc\nFileSize: 42\nNarHash: \
+     sha256:def\nNarSize: 123\nReferences: 00bgd045z0d4icpbc2yyz4gx48ak44la-net-tools-1.60 \
+     foo-dep\nDeriver: xxx.drv\nSig: cache.example.org:AAAA\nCA: fixed:r:sha256:0000\n";
 
   #[test]
   fn roundtrip() {
