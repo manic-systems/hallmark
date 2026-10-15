@@ -2,10 +2,12 @@
 //! content-addressed path construction Nix uses for fixed-output derivations,
 //! `builtins.toFile` and `nix-store --add`.
 
+use std::fmt;
+
 use hmac_sha256::Hash;
 use thiserror::Error;
 
-pub use crate::nixbase32;
+use crate::nixbase32;
 
 /// The canonical Nix store directory, without a trailing slash.
 pub const STORE_DIR: &str = "/nix/store";
@@ -69,8 +71,8 @@ pub enum BuildError {
   FlatWithReferences,
 }
 
-const fn is_name_char(c: u8) -> bool {
-  matches!(c,
+const fn is_name_char(byte: u8) -> bool {
+  matches!(byte,
     b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'+' | b'-' | b'_' | b'?' | b'=' | b'.')
 }
 
@@ -99,10 +101,14 @@ pub struct StorePath {
 
 /// A borrowed, validated store path or its `<hash>-<name>` component.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct StorePathRef<'a> {
-  path: &'a str,
+pub struct StorePathRef<'path> {
+  path: &'path str,
 }
 
+#[expect(
+  clippy::string_slice,
+  reason = "validated components are ASCII, so every index is a char boundary"
+)]
 fn validate_component(component: &str) -> Result<(), ParseStorePathError> {
   let bytes = component.as_bytes();
   if bytes.len() < ENCODED_DIGEST_SIZE + 2 {
@@ -115,14 +121,16 @@ fn validate_component(component: &str) -> Result<(), ParseStorePathError> {
   validate_name(&component[ENCODED_DIGEST_SIZE + 1..])
 }
 
-impl<'a> StorePathRef<'a> {
+impl<'path> StorePathRef<'path> {
   /// Validate the `<hash>-<name>` component that follows `/nix/store/`.
   ///
   /// # Errors
   ///
   /// Returns [`ParseStorePathError`] if the hash is malformed, the `-`
   /// separator is missing, or the name is invalid.
-  pub fn from_bytes(component: &'a str) -> Result<Self, ParseStorePathError> {
+  pub fn from_bytes(
+    component: &'path str,
+  ) -> Result<Self, ParseStorePathError> {
     validate_component(component)?;
     Ok(Self { path: component })
   }
@@ -135,7 +143,7 @@ impl<'a> StorePathRef<'a> {
   /// `/nix/store/` prefix is absent; otherwise returns the component errors
   /// from [`StorePathRef::from_bytes`].
   pub fn from_absolute_path(
-    path: &'a str,
+    path: &'path str,
   ) -> Result<Self, ParseStorePathError> {
     let component = path
       .strip_prefix(STORE_DIR_WITH_SLASH)
@@ -145,24 +153,40 @@ impl<'a> StorePathRef<'a> {
   }
 
   /// The nixbase32 hash prefix, without the name or store directory.
+  #[expect(
+    clippy::same_name_method,
+    reason = "`hash` names the store-path hash part, as in Nix"
+  )]
+  #[expect(
+    clippy::string_slice,
+    reason = "validated components are ASCII, so every index is a char \
+              boundary"
+  )]
   #[must_use]
-  pub fn hash(&self) -> &'a str {
+  pub fn hash(&self) -> &'path str {
     let start = self.path.len() - self.component().len();
     &self.path[start..start + ENCODED_DIGEST_SIZE]
   }
 
   /// The name that follows the `-`.
+  #[expect(
+    clippy::string_slice,
+    reason = "validated components are ASCII, so every index is a char \
+              boundary"
+  )]
   #[must_use]
-  pub fn name(&self) -> &'a str {
+  pub fn name(&self) -> &'path str {
     let component = self.component();
     &component[ENCODED_DIGEST_SIZE + 1..]
   }
 
   /// The 20-byte digest the hash encodes.
-  // The hash was decoded during validation, so decoding it again is
-  // infallible; the `expect` records that invariant rather than a runtime
-  // failure mode.
-  #[allow(clippy::missing_panics_doc)]
+  #[expect(
+    clippy::missing_panics_doc,
+    clippy::expect_used,
+    reason = "the hash was decoded during validation, so decoding it again is \
+              infallible"
+  )]
   #[must_use]
   pub fn digest(&self) -> [u8; DIGEST_SIZE] {
     let mut out = [0_u8; DIGEST_SIZE];
@@ -176,11 +200,11 @@ impl<'a> StorePathRef<'a> {
   /// [`StorePathRef::from_absolute_path`], or a `<hash>-<name>` component
   /// from [`StorePathRef::from_bytes`].
   #[must_use]
-  pub fn as_str(&self) -> &'a str {
+  pub const fn as_str(&self) -> &'path str {
     self.path
   }
 
-  fn component(&self) -> &'a str {
+  fn component(&self) -> &'path str {
     self
       .path
       .rsplit_once('/')
@@ -203,7 +227,7 @@ impl StorePath {
   ///
   /// See [`StorePathRef::from_absolute_path`].
   pub fn parse(path: &str) -> Result<Self, ParseStorePathError> {
-    StorePathRef::from_absolute_path(path).map(|p| p.to_owned())
+    StorePathRef::from_absolute_path(path).map(|path_ref| path_ref.to_owned())
   }
 
   /// Validate that `path` is a well-formed `/nix/store/<hash>-<name>` path.
@@ -235,6 +259,10 @@ impl StorePath {
   }
 
   /// The nixbase32 hash prefix, without the name or store directory.
+  #[expect(
+    clippy::same_name_method,
+    reason = "`hash` names the store-path hash part, as in Nix"
+  )]
   #[must_use]
   pub fn hash(&self) -> &str {
     self.as_ref().hash()
@@ -259,8 +287,8 @@ impl StorePath {
   }
 }
 
-impl std::fmt::Display for StorePath {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for StorePath {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     f.write_str(&self.path)
   }
 }
@@ -282,17 +310,20 @@ impl StoreDir {
   ///
   /// Returns [`StoreDirError`] unless `path` is absolute, has no trailing
   /// slash, and has no empty, `.` or `..` components.
-  pub fn new(path: impl Into<String>) -> Result<Self, StoreDirError> {
-    let path = path.into();
-    let canonical = path.strip_prefix('/').is_some_and(|rest| {
+  pub fn new<P>(path: P) -> Result<Self, StoreDirError>
+  where
+    P: Into<String>,
+  {
+    let owned_path = path.into();
+    let canonical = owned_path.strip_prefix('/').is_some_and(|rest| {
       rest
         .split('/')
         .all(|component| !matches!(component, "" | "." | ".."))
     });
     if canonical {
-      Ok(Self { path })
+      Ok(Self { path: owned_path })
     } else {
-      Err(StoreDirError { path })
+      Err(StoreDirError { path: owned_path })
     }
   }
 
@@ -330,8 +361,8 @@ impl Default for StoreDir {
   }
 }
 
-impl std::fmt::Display for StoreDir {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for StoreDir {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     f.write_str(&self.path)
   }
 }
@@ -367,17 +398,17 @@ impl Method {
 fn hex_lower(bytes: &[u8]) -> String {
   const HEX: &[u8; 16] = b"0123456789abcdef";
   let mut out = String::with_capacity(bytes.len() * 2);
-  for &b in bytes {
-    out.push(char::from(HEX[(b >> 4) as usize]));
-    out.push(char::from(HEX[(b & 0x0F) as usize]));
+  for &byte in bytes {
+    out.push(char::from(HEX[(byte >> 4_u8) as usize]));
+    out.push(char::from(HEX[(byte & 0x0F) as usize]));
   }
   out
 }
 
 fn compress_hash<const N: usize>(input: &[u8]) -> [u8; N] {
   let mut out = [0_u8; N];
-  for (i, &b) in input.iter().enumerate() {
-    out[i % N] ^= b;
+  for (index, &byte) in input.iter().enumerate() {
+    out[index % N] ^= byte;
   }
   out
 }
@@ -474,15 +505,15 @@ mod tests {
 
   #[test]
   fn parse_valid() {
-    let p = StorePath::parse(
+    let store_path = StorePath::parse(
       "/nix/store/00bgd045z0d4icpbc2yyz4gx48ak44la-net-tools-1.\
        60_p20170221182432",
     )
     .unwrap();
-    assert_eq!(p.hash(), "00bgd045z0d4icpbc2yyz4gx48ak44la");
-    assert_eq!(p.name(), "net-tools-1.60_p20170221182432");
+    assert_eq!(store_path.hash(), "00bgd045z0d4icpbc2yyz4gx48ak44la");
+    assert_eq!(store_path.name(), "net-tools-1.60_p20170221182432");
     assert_eq!(
-      p.digest(),
+      store_path.digest(),
       *b"\x8a\x12\x32\x15\x22\xfd\x91\xef\xbd\x60\xeb\xb2\x48\x1a\xf8\x85\x80\xf6\x16\x00"
     );
   }
@@ -497,30 +528,26 @@ mod tests {
       StorePath::parse("/nix/store/00bgd045z0d4icpbc2yy-"),
       Err(ParseStorePathError::Length)
     );
-    assert!(
-      StorePath::parse("/nix/store/00bgd045z0d4icpbc2yyz4gx48aku4la-net-tools")
-        .is_err()
-    );
+    StorePath::parse("/nix/store/00bgd045z0d4icpbc2yyz4gx48aku4la-net-tools")
+      .unwrap_err();
     assert_eq!(
       StorePathRef::from_bytes("00bgd045z0d4icpbc2yyz4gx48ak44lanet-tools"),
       Err(ParseStorePathError::MissingDash)
     );
-    assert!(
-      StorePath::parse("/nix/store/00bgd045z0d4icpbc2yyz4gx48ak44la-net/tools")
-        .is_err()
-    );
+    StorePath::parse("/nix/store/00bgd045z0d4icpbc2yyz4gx48ak44la-net/tools")
+      .unwrap_err();
   }
 
   #[test]
   fn parse_in_custom_store_dir() {
     let dir = StoreDir::new("/var/lib/nix/store").unwrap();
-    let p = dir
+    let store_path = dir
       .parse("/var/lib/nix/store/00bgd045z0d4icpbc2yyz4gx48ak44la-net-tools")
       .unwrap();
-    assert_eq!(p.hash(), "00bgd045z0d4icpbc2yyz4gx48ak44la");
-    assert_eq!(p.name(), "net-tools");
+    assert_eq!(store_path.hash(), "00bgd045z0d4icpbc2yyz4gx48ak44la");
+    assert_eq!(store_path.name(), "net-tools");
     assert_eq!(
-      p.as_str(),
+      store_path.as_str(),
       "/var/lib/nix/store/00bgd045z0d4icpbc2yyz4gx48ak44la-net-tools"
     );
   }
@@ -565,9 +592,9 @@ mod tests {
 
   #[test]
   fn text_path_zero_references() {
-    let p = build_text_path("foo", b"bar", &[]).unwrap();
+    let store_path = build_text_path("foo", b"bar", &[]).unwrap();
     assert_eq!(
-      p.as_str(),
+      store_path.as_str(),
       "/nix/store/vxjiwkjkn7x4079qvh1jkl5pn05j2aw0-foo"
     );
   }
@@ -592,7 +619,7 @@ mod tests {
     .unwrap()
     .try_into()
     .unwrap();
-    let p = build_ca_path(
+    let store_path = build_ca_path(
       Method::Recursive,
       &digest,
       "baz",
@@ -601,7 +628,7 @@ mod tests {
     )
     .unwrap();
     assert_eq!(
-      p.as_str(),
+      store_path.as_str(),
       "/nix/store/s89y431zzhmdn3k8r96rvakryddkpv2v-baz"
     );
   }

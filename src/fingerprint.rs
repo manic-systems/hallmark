@@ -2,23 +2,22 @@
 
 use crate::{narinfo::NarInfo, nixbase32};
 
-fn nibble(b: u8) -> Option<u8> {
-  match b {
-    b'0'..=b'9' => Some(b - b'0'),
-    b'a'..=b'f' => Some(b - b'a' + 10),
-    b'A'..=b'F' => Some(b - b'A' + 10),
+const fn nibble(digit: u8) -> Option<u8> {
+  match digit {
+    b'0'..=b'9' => Some(digit - b'0'),
+    b'a'..=b'f' => Some(digit - b'a' + 10),
+    b'A'..=b'F' => Some(digit - b'A' + 10),
     _ => None,
   }
 }
 
-fn hex_decode(s: &str) -> Option<Vec<u8>> {
-  if !s.len().is_multiple_of(2) {
+fn hex_decode(hex: &str) -> Option<Vec<u8>> {
+  if !hex.len().is_multiple_of(2) {
     return None;
   }
-  let bytes = s.as_bytes();
-  let mut out = Vec::with_capacity(s.len() / 2);
-  for i in (0..bytes.len()).step_by(2) {
-    out.push((nibble(bytes[i])? << 4) | nibble(bytes[i + 1])?);
+  let mut out = Vec::with_capacity(hex.len() / 2);
+  for &[high, low] in hex.as_bytes().as_chunks::<2>().0 {
+    out.push((nibble(high)? << 4_u8) | nibble(low)?);
   }
   Some(out)
 }
@@ -34,18 +33,18 @@ fn hex_decode(s: &str) -> Option<Vec<u8>> {
 /// The base32 form when `s` is a valid `sha256:` hex digest; otherwise `s`
 /// unchanged.
 #[must_use]
-pub fn normalize_nar_hash(s: &str) -> String {
-  let Some((algo, digest)) = s.split_once(':') else {
-    return s.to_owned();
+pub fn normalize_nar_hash(nar_hash: &str) -> String {
+  let Some((algo, digest)) = nar_hash.split_once(':') else {
+    return nar_hash.to_owned();
   };
   if algo == "sha256"
     && digest.len() == 64
-    && digest.bytes().all(|b| b.is_ascii_hexdigit())
+    && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
     && let Some(bytes) = hex_decode(digest)
   {
     return format!("{algo}:{}", nixbase32::encode(&bytes));
   }
-  s.to_owned()
+  nar_hash.to_owned()
 }
 
 /// Decode a `sha256:<digest>` nar-hash into its 32 raw bytes.
@@ -59,8 +58,8 @@ pub fn normalize_nar_hash(s: &str) -> String {
 /// for a non-`sha256` algorithm, a missing `:` separator, or a digest with
 /// the wrong length or encoding.
 #[must_use]
-pub fn parse_nar_hash(s: &str) -> Option<[u8; 32]> {
-  let (algo, digest) = s.split_once(':')?;
+pub fn parse_nar_hash(nar_hash: &str) -> Option<[u8; 32]> {
+  let (algo, digest) = nar_hash.split_once(':')?;
   if algo != "sha256" {
     return None;
   }
@@ -87,7 +86,7 @@ pub fn fingerprint(store_dir: &str, narinfo: &NarInfo) -> String {
   let mut refs: Vec<String> = narinfo
     .references
     .iter()
-    .map(|r| absolutize(store_dir, r))
+    .map(|reference| absolutize(store_dir, reference))
     .collect();
   refs.sort();
   format!(

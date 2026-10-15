@@ -36,7 +36,7 @@ rules other tools build on, with each concern behind its own feature flag.
 Parse, verify and render a narinfo:
 
 ```rust,no_run
-use hallmark::{NarInfo, PublicKey};
+use hallmark::{narinfo::NarInfo, sign::PublicKey};
 
 let text = std::fs::read_to_string("example.narinfo")?;
 let info = NarInfo::parse_str(&text)?;
@@ -52,7 +52,7 @@ print!("{info}");
 Sign a narinfo with a secret key:
 
 ```rust
-use hallmark::{NarInfo, SecretKey};
+use hallmark::{narinfo::NarInfo, sign::SecretKey};
 
 let key = SecretKey::parse("cache-1:<base64 of 64-byte secret>");
 # let _ = key;

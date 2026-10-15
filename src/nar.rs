@@ -69,55 +69,61 @@ pub fn file_nar_trailer(len: u64) -> Vec<u8> {
 /// # Errors
 ///
 /// Propagates write errors from `w`.
-pub fn write_file_nar<W: Write + ?Sized>(
-  w: &mut W,
-  contents: &[u8],
-) -> io::Result<()> {
+pub fn write_file_nar<W>(w: &mut W, contents: &[u8]) -> io::Result<()>
+where
+  W: Write + ?Sized,
+{
   let len = contents.len() as u64;
   w.write_all(&file_nar_header(len))?;
   w.write_all(contents)?;
   w.write_all(&file_nar_trailer(len))
 }
 
-fn read_u64<R: Read + ?Sized>(r: &mut R) -> io::Result<u64> {
+fn read_u64<R>(reader: &mut R) -> io::Result<u64>
+where
+  R: Read + ?Sized,
+{
   let mut buf = [0_u8; 8];
-  r.read_exact(&mut buf)?;
+  reader.read_exact(&mut buf)?;
   Ok(u64::from_le_bytes(buf))
 }
 
-fn write_u64<W: Write + ?Sized>(w: &mut W, n: u64) -> io::Result<()> {
-  w.write_all(&n.to_le_bytes())
+fn write_u64<W>(writer: &mut W, n: u64) -> io::Result<()>
+where
+  W: Write + ?Sized,
+{
+  writer.write_all(&n.to_le_bytes())
 }
 
-fn token<R, W>(r: &mut R, w: &mut W) -> io::Result<Vec<u8>>
+fn token<R, W>(reader: &mut R, writer: &mut W) -> io::Result<Vec<u8>>
 where
   R: Read + ?Sized,
   W: Write + ?Sized,
 {
-  let len = usize::try_from(read_u64(r)?).unwrap_or(usize::MAX);
+  let len = usize::try_from(read_u64(reader)?).unwrap_or(usize::MAX);
   if len > MAX_TOKEN {
     return Err(invalid("malformed NAR: oversized token"));
   }
   let mut buf = vec![0_u8; len];
-  r.read_exact(&mut buf)?;
+  reader.read_exact(&mut buf)?;
   let pad = (8 - len % 8) % 8;
   let mut padding = [0_u8; 8];
-  r.read_exact(&mut padding[..pad])?;
-  if padding[..pad].iter().any(|&b| b != 0) {
+  reader.read_exact(&mut padding[..pad])?;
+  if padding[..pad].iter().any(|&byte| byte != 0) {
     return Err(invalid("malformed NAR: non-zero padding"));
   }
-  write_u64(w, len as u64)?;
-  w.write_all(&buf)?;
-  w.write_all(&padding[..pad])?;
+  write_u64(writer, len as u64)?;
+  writer.write_all(&buf)?;
+  writer.write_all(&padding[..pad])?;
   Ok(buf)
 }
 
-fn expect<R, W>(r: &mut R, w: &mut W, want: &str) -> io::Result<()>
+fn expect<R, W>(reader: &mut R, writer: &mut W, want: &str) -> io::Result<()>
 where
   R: Read + ?Sized,
   W: Write + ?Sized,
 {
-  let tok = token(r, w)?;
+  let tok = token(reader, writer)?;
   if tok == want.as_bytes() {
     Ok(())
   } else {
@@ -128,24 +134,24 @@ where
   }
 }
 
-fn contents<R, W>(r: &mut R, w: &mut W) -> io::Result<()>
+fn contents<R, W>(reader: &mut R, writer: &mut W) -> io::Result<()>
 where
   R: Read + ?Sized,
   W: Write + ?Sized,
 {
-  let len = read_u64(r)?;
-  write_u64(w, len)?;
-  let copied = io::copy(&mut r.take(len), w)?;
+  let len = read_u64(reader)?;
+  write_u64(writer, len)?;
+  let copied = io::copy(&mut reader.take(len), writer)?;
   if copied != len {
     return Err(io::ErrorKind::UnexpectedEof.into());
   }
   let pad = pad_len(len);
   let mut padding = [0_u8; 8];
-  r.read_exact(&mut padding[..pad])?;
-  if padding[..pad].iter().any(|&b| b != 0) {
+  reader.read_exact(&mut padding[..pad])?;
+  if padding[..pad].iter().any(|&byte| byte != 0) {
     return Err(invalid("malformed NAR: non-zero padding"));
   }
-  w.write_all(&padding[..pad])
+  writer.write_all(&padding[..pad])
 }
 
 /// Copy exactly one NAR from `r` to `w`, parsing it to find where it ends.
@@ -153,7 +159,7 @@ where
 /// # Errors
 ///
 /// Fails if the input is not a well-formed NAR or on I/O errors.
-pub fn copy<R, W>(r: &mut R, w: &mut W) -> io::Result<()>
+pub fn copy<R, W>(reader: &mut R, writer: &mut W) -> io::Result<()>
 where
   R: Read + ?Sized,
   W: Write + ?Sized,
@@ -164,32 +170,32 @@ where
     DirEntry,
   }
 
-  expect(r, w, "nix-archive-1")?;
+  expect(reader, writer, "nix-archive-1")?;
   let mut depth = 0_usize;
   let mut next = Next::Node;
   loop {
     next = match next {
       Next::Node => {
-        expect(r, w, "(")?;
-        expect(r, w, "type")?;
-        match token(r, w)?.as_slice() {
+        expect(reader, writer, "(")?;
+        expect(reader, writer, "type")?;
+        match token(reader, writer)?.as_slice() {
           b"regular" => {
-            let mut tok = token(r, w)?;
+            let mut tok = token(reader, writer)?;
             if tok == b"executable" {
-              expect(r, w, "")?;
-              tok = token(r, w)?;
+              expect(reader, writer, "")?;
+              tok = token(reader, writer)?;
             }
             if tok != b"contents" {
               return Err(invalid("malformed NAR: expected \"contents\""));
             }
-            contents(r, w)?;
-            expect(r, w, ")")?;
+            contents(reader, writer)?;
+            expect(reader, writer, ")")?;
             Next::NodeDone
           },
           b"symlink" => {
-            expect(r, w, "target")?;
-            token(r, w)?;
-            expect(r, w, ")")?;
+            expect(reader, writer, "target")?;
+            token(reader, writer)?;
+            expect(reader, writer, ")")?;
             Next::NodeDone
           },
           b"directory" => {
@@ -208,16 +214,16 @@ where
         if depth == 0 {
           return Ok(());
         }
-        expect(r, w, ")")?;
+        expect(reader, writer, ")")?;
         Next::DirEntry
       },
       Next::DirEntry => {
-        match token(r, w)?.as_slice() {
+        match token(reader, writer)?.as_slice() {
           b"entry" => {
-            expect(r, w, "(")?;
-            expect(r, w, "name")?;
-            token(r, w)?;
-            expect(r, w, "node")?;
+            expect(reader, writer, "(")?;
+            expect(reader, writer, "name")?;
+            token(reader, writer)?;
+            expect(reader, writer, "node")?;
             Next::Node
           },
           b")" => {
@@ -237,10 +243,10 @@ const MAGIC: &str = "nix-archive-1";
 
 const MAX_DEPTH: usize = 10_000;
 
-fn write_padded_token<W: Write + ?Sized>(
-  w: &mut W,
-  token: &[u8],
-) -> io::Result<()> {
+fn write_padded_token<W>(w: &mut W, token: &[u8]) -> io::Result<()>
+where
+  W: Write + ?Sized,
+{
   write_u64(w, token.len() as u64)?;
   w.write_all(token)?;
   let pad = (8 - token.len() % 8) % 8;
@@ -256,17 +262,20 @@ fn write_padded_token<W: Write + ?Sized>(
 /// # Errors
 ///
 /// Propagates write errors from `w`.
-pub fn open<W: Write + ?Sized>(w: &mut W) -> io::Result<Node<'_, W>> {
+pub fn open<W>(w: &mut W) -> io::Result<Node<'_, W>>
+where
+  W: Write + ?Sized,
+{
   write_padded_token(w, MAGIC.as_bytes())?;
   Ok(Node { w })
 }
 
 /// A handle for writing one NAR node (a file, symlink, or directory).
-pub struct Node<'a, W: Write + ?Sized> {
-  w: &'a mut W,
+pub struct Node<'writer, W: Write + ?Sized> {
+  w: &'writer mut W,
 }
 
-impl<'a, W: Write + ?Sized> Node<'a, W> {
+impl<'writer, W: Write + ?Sized> Node<'writer, W> {
   /// Write this node as a symlink pointing at `target`.
   ///
   /// # Errors
@@ -318,7 +327,7 @@ impl<'a, W: Write + ?Sized> Node<'a, W> {
   /// # Errors
   ///
   /// Propagates write errors from the underlying writer.
-  pub fn directory(self) -> io::Result<Directory<'a, W>> {
+  pub fn directory(self) -> io::Result<Directory<'writer, W>> {
     write_padded_token(self.w, b"(")?;
     write_padded_token(self.w, b"type")?;
     write_padded_token(self.w, b"directory")?;
@@ -331,8 +340,8 @@ impl<'a, W: Write + ?Sized> Node<'a, W> {
 }
 
 /// A handle for writing the entries of a directory node.
-pub struct Directory<'a, W: Write + ?Sized> {
-  w:          &'a mut W,
+pub struct Directory<'writer, W: Write + ?Sized> {
+  w:          &'writer mut W,
   last:       Option<Vec<u8>>,
   open_entry: bool,
 }
@@ -403,7 +412,7 @@ pub enum Entry {
   },
   /// A directory, mapping each entry name to its child node. The map keeps
   /// names in the sorted order a NAR requires.
-  Directory(BTreeMap<Vec<u8>, Entry>),
+  Directory(BTreeMap<Vec<u8>, Self>),
 }
 
 /// Serialize an [`Entry`] tree as a complete NAR to `w`.
@@ -411,26 +420,24 @@ pub enum Entry {
 /// # Errors
 ///
 /// Propagates write errors from `w`.
-pub fn write_nar<W: Write + ?Sized>(
-  w: &mut W,
-  entry: &Entry,
-) -> io::Result<()> {
+pub fn write_nar<W>(w: &mut W, entry: &Entry) -> io::Result<()>
+where
+  W: Write + ?Sized,
+{
   write_node(open(w)?, entry)
 }
 
-fn write_node<W: Write + ?Sized>(
-  node: Node<'_, W>,
-  entry: &Entry,
-) -> io::Result<()> {
-  match entry {
+fn write_node<W>(node: Node<'_, W>, entry: &Entry) -> io::Result<()>
+where
+  W: Write + ?Sized,
+{
+  match *entry {
     Entry::File {
       executable,
-      contents,
-    } => {
-      node.file(*executable, contents.len() as u64, &mut contents.as_slice())
-    },
-    Entry::Symlink { target } => node.symlink(target),
-    Entry::Directory(entries) => {
+      ref contents,
+    } => node.file(executable, contents.len() as u64, &mut contents.as_slice()),
+    Entry::Symlink { ref target } => node.symlink(target),
+    Entry::Directory(ref entries) => {
       let mut dir = node.directory()?;
       for (name, child) in entries {
         let child_node = dir.entry(name)?;
@@ -454,19 +461,27 @@ fn write_node<W: Write + ?Sized>(
 /// [`io::ErrorKind::InvalidInput`] for anything other than a regular file,
 /// directory or symlink.
 #[cfg(unix)]
-pub fn dump<W: Write + ?Sized>(w: &mut W, path: &Path) -> io::Result<()> {
+pub fn dump<W>(w: &mut W, path: &Path) -> io::Result<()>
+where
+  W: Write + ?Sized,
+{
   dump_node(open(w)?, path)
 }
 
 #[cfg(unix)]
-fn dump_node<W: Write + ?Sized>(
-  node: Node<'_, W>,
-  path: &Path,
-) -> io::Result<()> {
-  use std::os::unix::{ffi::OsStrExt, fs::PermissionsExt};
+#[expect(
+  clippy::filetype_is_file,
+  reason = "the chain ends in an error for every type it does not name"
+)]
+fn dump_node<W>(node: Node<'_, W>, path: &Path) -> io::Result<()>
+where
+  W: Write + ?Sized,
+{
+  use std::os::unix::{ffi::OsStrExt as _, fs::PermissionsExt as _};
 
-  let at =
-    |e: io::Error| io::Error::new(e.kind(), format!("{}: {e}", path.display()));
+  let at = |err: io::Error| {
+    io::Error::new(err.kind(), format!("{}: {err}", path.display()))
+  };
   let file_type = fs::symlink_metadata(path).map_err(at)?.file_type();
   if file_type.is_symlink() {
     let target = fs::read_link(path).map_err(at)?;
@@ -480,11 +495,11 @@ fn dump_node<W: Write + ?Sized>(
     let mut names = fs::read_dir(path)
       .and_then(|entries| {
         entries
-          .map(|entry| entry.map(|e| e.file_name()))
+          .map(|entry| entry.map(|dir_entry| dir_entry.file_name()))
           .collect::<io::Result<Vec<_>>>()
       })
       .map_err(at)?;
-    names.sort_unstable_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+    names.sort_unstable_by(|left, right| left.as_bytes().cmp(right.as_bytes()));
     let mut dir = node.directory()?;
     for name in names {
       dump_node(dir.entry(name.as_bytes())?, &path.join(name))?;
@@ -560,24 +575,30 @@ pub trait Visitor {
   }
 }
 
-fn read_padded_token<R: Read + ?Sized>(r: &mut R) -> io::Result<Vec<u8>> {
-  let len = usize::try_from(read_u64(r)?).unwrap_or(usize::MAX);
+fn read_padded_token<R>(reader: &mut R) -> io::Result<Vec<u8>>
+where
+  R: Read + ?Sized,
+{
+  let len = usize::try_from(read_u64(reader)?).unwrap_or(usize::MAX);
   if len > MAX_TOKEN {
     return Err(invalid("malformed NAR: oversized token"));
   }
   let mut buf = vec![0_u8; len];
-  r.read_exact(&mut buf)?;
+  reader.read_exact(&mut buf)?;
   let pad = (8 - len % 8) % 8;
   let mut padding = [0_u8; 8];
-  r.read_exact(&mut padding[..pad])?;
-  if padding[..pad].iter().any(|&b| b != 0) {
+  reader.read_exact(&mut padding[..pad])?;
+  if padding[..pad].iter().any(|&byte| byte != 0) {
     return Err(invalid("malformed NAR: non-zero padding"));
   }
   Ok(buf)
 }
 
-fn expect_token<R: Read + ?Sized>(r: &mut R, want: &str) -> io::Result<()> {
-  let tok = read_padded_token(r)?;
+fn expect_token<R>(reader: &mut R, want: &str) -> io::Result<()>
+where
+  R: Read + ?Sized,
+{
+  let tok = read_padded_token(reader)?;
   if tok == want.as_bytes() {
     Ok(())
   } else {
@@ -588,11 +609,14 @@ fn expect_token<R: Read + ?Sized>(r: &mut R, want: &str) -> io::Result<()> {
   }
 }
 
-fn read_padding<R: Read + ?Sized>(r: &mut R, len: u64) -> io::Result<()> {
+fn read_padding<R>(reader: &mut R, len: u64) -> io::Result<()>
+where
+  R: Read + ?Sized,
+{
   let pad = pad_len(len);
   let mut padding = [0_u8; 8];
-  r.read_exact(&mut padding[..pad])?;
-  if padding[..pad].iter().any(|&b| b != 0) {
+  reader.read_exact(&mut padding[..pad])?;
+  if padding[..pad].iter().any(|&byte| byte != 0) {
     return Err(invalid("malformed NAR: non-zero padding"));
   }
   Ok(())
@@ -607,65 +631,70 @@ fn read_padding<R: Read + ?Sized>(r: &mut R, len: u64) -> io::Result<()> {
 ///
 /// Fails if the input is not a well-formed NAR, on I/O errors, or if
 /// `visitor` returns an error.
-pub fn read<R: Read + ?Sized, V: Visitor>(
-  r: &mut R,
-  visitor: &mut V,
-) -> io::Result<()> {
-  expect_token(r, MAGIC)?;
-  read_node(r, visitor, 0)
+pub fn read<R, V>(reader: &mut R, visitor: &mut V) -> io::Result<()>
+where
+  R: Read + ?Sized,
+  V: Visitor,
+{
+  expect_token(reader, MAGIC)?;
+  read_node(reader, visitor, 0)
 }
 
-fn read_node<R: Read + ?Sized, V: Visitor>(
-  r: &mut R,
+fn read_node<R, V>(
+  reader: &mut R,
   visitor: &mut V,
   depth: usize,
-) -> io::Result<()> {
+) -> io::Result<()>
+where
+  R: Read + ?Sized,
+  V: Visitor,
+{
   if depth > MAX_DEPTH {
     return Err(invalid("malformed NAR: nesting too deep"));
   }
-  expect_token(r, "(")?;
-  expect_token(r, "type")?;
-  match read_padded_token(r)?.as_slice() {
+  expect_token(reader, "(")?;
+  expect_token(reader, "type")?;
+  match read_padded_token(reader)?.as_slice() {
     b"regular" => {
-      let mut tok = read_padded_token(r)?;
+      let mut tok = read_padded_token(reader)?;
       let executable = tok == b"executable";
       if executable {
-        expect_token(r, "")?;
-        tok = read_padded_token(r)?;
+        expect_token(reader, "")?;
+        tok = read_padded_token(reader)?;
       }
       if tok != b"contents" {
         return Err(invalid("malformed NAR: expected \"contents\""));
       }
-      let size = read_u64(r)?;
+      let size = read_u64(reader)?;
       {
-        let mut body = (&mut *r).take(size);
+        let mut body = (&mut *reader).take(size);
         visitor.visit_file(executable, size, &mut body)?;
         io::copy(&mut body, &mut io::sink())?;
         if body.limit() != 0 {
           return Err(io::ErrorKind::UnexpectedEof.into());
         }
       }
-      read_padding(r, size)?;
-      expect_token(r, ")")?;
+      read_padding(reader, size)?;
+      expect_token(reader, ")")?;
     },
     b"symlink" => {
-      expect_token(r, "target")?;
-      let target = read_padded_token(r)?;
+      expect_token(reader, "target")?;
+      let target = read_padded_token(reader)?;
       visitor.visit_symlink(&target)?;
-      expect_token(r, ")")?;
+      expect_token(reader, ")")?;
     },
     b"directory" => {
       visitor.enter_directory()?;
       loop {
-        match read_padded_token(r)?.as_slice() {
+        match read_padded_token(reader)?.as_slice() {
           b"entry" => {
-            expect_token(r, "(")?;
-            expect_token(r, "name")?;
-            let name = read_padded_token(r)?;
-            expect_token(r, "node")?;
+            expect_token(reader, "(")?;
+            expect_token(reader, "name")?;
+            let name = read_padded_token(reader)?;
+            expect_token(reader, "node")?;
             visitor.visit_entry(&name)?;
-            read_node(r, visitor, depth + 1)?;
-            expect_token(r, ")")?;
+            read_node(reader, visitor, depth + 1)?;
+            expect_token(reader, ")")?;
           },
           b")" => break,
           _ => {
@@ -762,9 +791,12 @@ impl Visitor for TreeBuilder {
 /// # Errors
 ///
 /// Fails if the input is not a well-formed NAR or on I/O errors.
-pub fn read_nar<R: Read + ?Sized>(r: &mut R) -> io::Result<Entry> {
+pub fn read_nar<R>(reader: &mut R) -> io::Result<Entry>
+where
+  R: Read + ?Sized,
+{
   let mut builder = TreeBuilder::default();
-  read(r, &mut builder)?;
+  read(reader, &mut builder)?;
   builder
     .root
     .ok_or_else(|| invalid("malformed NAR: no root node"))
@@ -772,6 +804,9 @@ pub fn read_nar<R: Read + ?Sized>(r: &mut R) -> io::Result<Entry> {
 
 #[cfg(test)]
 mod tests {
+  #[cfg(unix)] use std::os::unix::fs::symlink;
+  #[cfg(unix)] use std::os::unix::net::UnixListener;
+
   use super::*;
 
   #[test]
@@ -789,11 +824,11 @@ mod tests {
     write_file_nar(&mut nar, b"12345678").unwrap();
     let mut input = nar.clone();
     input.extend_from_slice(b"trailing");
-    let mut r = input.as_slice();
+    let mut reader = input.as_slice();
     let mut out = Vec::new();
-    copy(&mut r, &mut out).unwrap();
+    copy(&mut reader, &mut out).unwrap();
     assert_eq!(out, nar);
-    assert_eq!(r, b"trailing");
+    assert_eq!(reader, b"trailing");
   }
 
   #[test]
@@ -836,11 +871,11 @@ mod tests {
     write_nar(&mut nar, &sample_tree()).unwrap();
     let mut input = nar.clone();
     input.extend_from_slice(b"trailing");
-    let mut r = input.as_slice();
+    let mut reader = input.as_slice();
     let mut copied = Vec::new();
-    copy(&mut r, &mut copied).unwrap();
+    copy(&mut reader, &mut copied).unwrap();
     assert_eq!(copied, nar);
-    assert_eq!(r, b"trailing");
+    assert_eq!(reader, b"trailing");
   }
 
   #[test]
@@ -901,7 +936,7 @@ mod tests {
       .file(false, 0, &mut io::empty())
       .unwrap();
     match dir.entry(b"a") {
-      Err(e) => assert_eq!(e.kind(), io::ErrorKind::InvalidInput),
+      Err(err) => assert_eq!(err.kind(), io::ErrorKind::InvalidInput),
       Ok(_) => panic!("expected out-of-order entry to be rejected"),
     }
   }
@@ -913,7 +948,7 @@ mod tests {
     let mut dir = node.directory().unwrap();
     for bad in [&b"a/b"[..], b"", &b"a\0b"[..]] {
       match dir.entry(bad) {
-        Err(e) => assert_eq!(e.kind(), io::ErrorKind::InvalidInput),
+        Err(err) => assert_eq!(err.kind(), io::ErrorKind::InvalidInput),
         Ok(_) => panic!("expected invalid name to be rejected"),
       }
     }
@@ -933,25 +968,25 @@ mod tests {
   fn truncated_tree_nar_fails() {
     let mut nar = Vec::new();
     write_nar(&mut nar, &sample_tree()).unwrap();
-    assert!(read_nar(&mut &nar[..nar.len() - 16]).is_err());
+    read_nar(&mut &nar[..nar.len() - 16]).unwrap_err();
   }
 
   #[cfg(unix)]
   #[test]
   fn dump_matches_tree_writer() {
-    use std::os::unix::fs::{PermissionsExt, symlink};
+    use std::os::unix::fs::PermissionsExt as _;
 
     let root = tempfile::tempdir().unwrap();
-    let p = root.path();
-    fs::write(p.join("exe"), "#!/bin/sh").unwrap();
-    fs::set_permissions(p.join("exe"), fs::Permissions::from_mode(0o755))
+    let path = root.path();
+    fs::write(path.join("exe"), "#!/bin/sh").unwrap();
+    fs::set_permissions(path.join("exe"), fs::Permissions::from_mode(0o755))
       .unwrap();
-    symlink("exe", p.join("link")).unwrap();
-    fs::create_dir(p.join("sub")).unwrap();
-    fs::write(p.join("sub/f"), "abc").unwrap();
+    symlink("exe", path.join("link")).unwrap();
+    fs::DirBuilder::new().create(path.join("sub")).unwrap();
+    fs::write(path.join("sub/f"), "abc").unwrap();
 
     let mut dumped = Vec::new();
-    dump(&mut dumped, p).unwrap();
+    dump(&mut dumped, path).unwrap();
     let mut expected = Vec::new();
     write_nar(&mut expected, &sample_tree()).unwrap();
     assert_eq!(dumped, expected);
@@ -979,7 +1014,7 @@ mod tests {
   fn dump_archives_root_symlink_and_empty_directory() {
     let root = tempfile::tempdir().unwrap();
     let link = root.path().join("link");
-    std::os::unix::fs::symlink("/nonexistent", &link).unwrap();
+    symlink("/nonexistent", &link).unwrap();
     let mut nar = Vec::new();
     dump(&mut nar, &link).unwrap();
     assert_eq!(read_nar(&mut nar.as_slice()).unwrap(), Entry::Symlink {
@@ -987,7 +1022,7 @@ mod tests {
     });
 
     let empty = root.path().join("empty");
-    fs::create_dir(&empty).unwrap();
+    fs::DirBuilder::new().create(&empty).unwrap();
     nar.clear();
     dump(&mut nar, &empty).unwrap();
     assert_eq!(
@@ -1001,7 +1036,7 @@ mod tests {
   fn dump_rejects_special_files() {
     let root = tempfile::tempdir().unwrap();
     let socket = root.path().join("socket");
-    let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    let _listener = UnixListener::bind(&socket).unwrap();
     let err = dump(&mut Vec::new(), &socket).unwrap_err();
     assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
   }

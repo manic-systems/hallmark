@@ -15,14 +15,14 @@ fn normalize_hex_to_base32() {
   assert_eq!(normalize_nar_hash(B32), B32);
 }
 
-fn upper_digest(h: &str) -> String {
-  let (algo, digest) = h.split_once(':').unwrap();
-  format!("{algo}:{}", digest.to_uppercase())
+fn upper_digest(hash: &str) -> Option<String> {
+  let (algo, digest) = hash.split_once(':')?;
+  Some(format!("{algo}:{}", digest.to_uppercase()))
 }
 
 #[test]
 fn normalize_accepts_uppercase_hex() {
-  assert_eq!(normalize_nar_hash(&upper_digest(HEX)), B32);
+  assert_eq!(normalize_nar_hash(&upper_digest(HEX).unwrap()), B32);
 }
 
 #[test]
@@ -37,7 +37,10 @@ fn normalize_passes_through_sri_and_other_algos() {
 fn parse_hex_and_base32_agree() {
   assert_eq!(parse_nar_hash(HEX), Some(EMPTY_SHA256));
   assert_eq!(parse_nar_hash(B32), Some(EMPTY_SHA256));
-  assert_eq!(parse_nar_hash(&upper_digest(HEX)), Some(EMPTY_SHA256));
+  assert_eq!(
+    parse_nar_hash(&upper_digest(HEX).unwrap()),
+    Some(EMPTY_SHA256)
+  );
 }
 
 #[test]

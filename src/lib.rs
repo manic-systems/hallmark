@@ -1,5 +1,9 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
+#![expect(
+  clippy::doc_include_without_cfg,
+  reason = "missing_docs needs the crate doc in non-rustdoc builds too"
+)]
 #![doc = include_str!("../README.md")]
 
 #[cfg(any(feature = "store_path", feature = "fingerprint"))]
@@ -16,10 +20,3 @@ pub mod nixbase32;
 #[cfg(feature = "sign")] pub mod sign;
 
 #[cfg(feature = "nar")] pub mod nar;
-
-#[cfg(feature = "narinfo")]
-pub use narinfo::{NarInfo, NarInfoError};
-#[cfg(feature = "sign")]
-pub use sign::{KeyError, PublicKey, SecretKey};
-#[cfg(feature = "store_path")]
-pub use store_path::{Method, StoreDir, StorePath, StorePathRef};

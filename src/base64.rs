@@ -37,13 +37,13 @@ pub enum DecodeError {
 pub fn encode(bytes: &[u8]) -> String {
   let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
   for chunk in bytes.chunks(3) {
-    let n = chunk
-      .iter()
-      .enumerate()
-      .fold(0_u32, |n, (i, &b)| n | u32::from(b) << (16 - 8 * i));
-    for i in 0..4 {
-      if i <= chunk.len() {
-        out.push(char::from(ALPHABET[(n >> (18 - 6 * i) & 0x3F) as usize]));
+    let group = chunk.iter().enumerate().fold(0_u32, |acc, (index, &byte)| {
+      acc | (u32::from(byte) << (16 - 8 * index))
+    });
+    for index in 0..4 {
+      if index <= chunk.len() {
+        let sextet = (group >> (18 - 6 * index)) & 0x3F;
+        out.push(char::from(ALPHABET[sextet as usize]));
       } else {
         out.push('=');
       }
@@ -81,13 +81,13 @@ pub fn decode(input: &str) -> Result<Vec<u8>, DecodeError> {
 
   let mut out = Vec::with_capacity(data.len() * 3 / 4);
   let mut acc = 0_u32;
-  let mut bits = 0;
-  for &c in data {
-    let value = DECODE[usize::from(c)];
+  let mut bits = 0_u32;
+  for &symbol in data {
+    let value = DECODE[usize::from(symbol)];
     if value == 0xFF {
-      return Err(DecodeError::InvalidChar(c));
+      return Err(DecodeError::InvalidChar(symbol));
     }
-    acc = acc << 6 | u32::from(value);
+    acc = (acc << 6_u32) | u32::from(value);
     bits += 6;
     if bits >= 8 {
       bits -= 8;

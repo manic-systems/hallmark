@@ -48,7 +48,9 @@ pub enum KeyError {
   #[error("key {input:?} is not a valid Ed25519 key")]
   InvalidKey {
     /// The offending key string.
-    input: String,
+    input:  String,
+    /// Why the Ed25519 library rejected the key.
+    source: ed25519_compact::Error,
   },
 }
 
@@ -89,18 +91,21 @@ impl SecretKey {
         source,
       }
     })?;
-    let bytes: [u8; 64] = raw.try_into().map_err(|raw: Vec<u8>| {
+    let bytes: [u8; 64] = raw.try_into().map_err(|wrong: Vec<u8>| {
       KeyError::InvalidSize {
-        got:  raw.len(),
+        got:  wrong.len(),
         want: 64,
       }
     })?;
     let key = ed25519_compact::SecretKey::new(bytes);
-    key.validate_public_key(&key.public_key()).map_err(|_| {
-      KeyError::InvalidKey {
-        input: input.to_owned(),
-      }
-    })?;
+    key
+      .validate_public_key(&key.public_key())
+      .map_err(|source| {
+        KeyError::InvalidKey {
+          input: input.to_owned(),
+          source,
+        }
+      })?;
     Ok(Self {
       name: name.to_owned(),
       key,
@@ -153,16 +158,17 @@ impl PublicKey {
         source,
       }
     })?;
-    let bytes: [u8; 32] = raw.try_into().map_err(|raw: Vec<u8>| {
+    let bytes: [u8; 32] = raw.try_into().map_err(|wrong: Vec<u8>| {
       KeyError::InvalidSize {
-        got:  raw.len(),
+        got:  wrong.len(),
         want: 32,
       }
     })?;
     let key = ed25519_compact::PublicKey::new(bytes);
-    key.validate().map_err(|_| {
+    key.validate().map_err(|source| {
       KeyError::InvalidKey {
         input: input.to_owned(),
+        source,
       }
     })?;
     Ok(Self {
@@ -208,6 +214,10 @@ impl PublicKey {
   }
 }
 
+#[expect(
+  clippy::multiple_inherent_impl,
+  reason = "signing lives behind the `sign` feature, apart from parsing"
+)]
 impl NarInfo {
   /// Sign this narinfo's fingerprint and append the signature, using
   /// `/nix/store` as the store directory.
@@ -221,7 +231,7 @@ impl NarInfo {
   #[must_use]
   pub fn verify(&self, keys: &[PublicKey]) -> bool {
     let fp = fingerprint(STORE_DIR, self);
-    keys.iter().any(|k| k.verify(&fp, &self.sig))
+    keys.iter().any(|key| key.verify(&fp, &self.sig))
   }
 }
 
@@ -277,10 +287,10 @@ mod tests {
     let sk = keypair([3; 32], "cache");
     let padded = sk.public_key().to_nix_string();
     let unpadded = padded.trim_end_matches('=').to_owned();
-    assert!(unpadded.ends_with(|c: char| c != '='));
-    let a = PublicKey::parse(&padded).unwrap();
-    let b = PublicKey::parse(&unpadded).unwrap();
-    assert_eq!(a, b);
+    assert!(unpadded.ends_with(|last: char| last != '='));
+    let from_padded = PublicKey::parse(&padded).unwrap();
+    let from_unpadded = PublicKey::parse(&unpadded).unwrap();
+    assert_eq!(from_padded, from_unpadded);
   }
 
   #[test]

@@ -6,8 +6,10 @@ use thiserror::Error;
 
 const ALPHABET: &[u8; 32] = b"0123456789abcdfghijklmnpqrsvwxyz";
 
-// `i` ranges over 0..32, so the `as u8` is exact.
-#[allow(clippy::cast_possible_truncation)]
+#[expect(
+  clippy::cast_possible_truncation,
+  reason = "`i` ranges over 0..32, so the `as u8` is exact"
+)]
 const DECODE: [u8; 256] = {
   let mut table = [0xFF_u8; 256];
   let mut i = 0;
@@ -47,13 +49,15 @@ pub const fn decode_len(len: usize) -> usize {
 pub fn encode(bytes: &[u8]) -> String {
   let len = encode_len(bytes.len());
   let mut out = String::with_capacity(len);
-  for n in (0..len).rev() {
-    let b = n * 5;
-    let i = b / 8;
-    let j = b % 8;
-    let c = (u32::from(bytes[i]) >> j)
-      | bytes.get(i + 1).map_or(0, |&b| u32::from(b) << (8 - j));
-    out.push(char::from(ALPHABET[(c & 0x1F) as usize]));
+  for digit in (0..len).rev() {
+    let bit = digit * 5;
+    let index = bit / 8;
+    let shift = bit % 8;
+    let value = (u32::from(bytes[index]) >> shift)
+      | bytes
+        .get(index + 1)
+        .map_or(0, |&next| u32::from(next) << (8 - shift));
+    out.push(char::from(ALPHABET[(value & 0x1F) as usize]));
   }
   out
 }
@@ -66,25 +70,27 @@ pub fn encode(bytes: &[u8]) -> String {
 /// (which omits `e`, `o`, `u`, and `t`), or
 /// [`DecodeError::NonZeroPadding`] when the final character carries bits
 /// that would not round-trip.
-// The narrowing casts keep only the low bits of each 5-bit digit; the
-// overflow is captured separately as `carry`.
-#[allow(clippy::cast_possible_truncation)]
+#[expect(
+  clippy::cast_possible_truncation,
+  reason = "the narrowing casts keep only the low bits of each 5-bit digit, \
+            the overflow is captured separately as `carry`"
+)]
 pub fn decode(input: &[u8]) -> Result<Vec<u8>, DecodeError> {
   let output_len = decode_len(input.len());
   let mut output = vec![0_u8; output_len];
-  for (n, &c) in input.iter().rev().enumerate() {
-    let digit = DECODE[c as usize];
-    if digit == 0xFF {
-      return Err(DecodeError::InvalidChar(c));
+  for (position, &symbol) in input.iter().rev().enumerate() {
+    let decoded = DECODE[symbol as usize];
+    if decoded == 0xFF {
+      return Err(DecodeError::InvalidChar(symbol));
     }
-    let digit = u16::from(digit);
-    let b = n * 5;
-    let i = b / 8;
-    let j = (b % 8) as u16;
-    output[i] |= (digit << j) as u8;
-    let carry = (digit >> (8 - j)) as u8;
-    if i + 1 < output_len {
-      output[i + 1] |= carry;
+    let digit = u16::from(decoded);
+    let bit = position * 5;
+    let index = bit / 8;
+    let shift = (bit % 8) as u16;
+    output[index] |= (digit << shift) as u8;
+    let carry = (digit >> (8 - shift)) as u8;
+    if index + 1 < output_len {
+      output[index + 1] |= carry;
     } else if carry != 0 {
       return Err(DecodeError::NonZeroPadding);
     }

@@ -3,7 +3,7 @@
 
 use std::{
   fmt,
-  io::{self, BufRead, BufReader, Read},
+  io::{self, BufRead as _, BufReader, Read},
   num::ParseIntError,
 };
 
@@ -68,10 +68,13 @@ impl NarInfo {
   ///
   /// Returns [`NarInfoError`] if a line is malformed, an integer field cannot
   /// be parsed, an I/O error occurs, or `StorePath` is missing.
-  pub fn parse(reader: impl Read) -> Result<Self, NarInfoError> {
+  pub fn parse<R>(reader: R) -> Result<Self, NarInfoError>
+  where
+    R: Read,
+  {
     let mut narinfo = Self::default();
-    for line in BufReader::new(reader).lines() {
-      let line = line?;
+    for result in BufReader::new(reader).lines() {
+      let line = result?;
       if line.is_empty() {
         continue;
       }
@@ -139,7 +142,7 @@ impl fmt::Display for NarInfo {
     writeln!(f, "StorePath: {}", self.store_path)?;
     writeln!(f, "URL: {}", self.url)?;
     writeln!(f, "Compression: {}", self.compression)?;
-    if let Some(file_hash) = &self.file_hash {
+    if let Some(file_hash) = self.file_hash.as_ref() {
       writeln!(f, "FileHash: {file_hash}")?;
     }
     if let Some(file_size) = self.file_size {
@@ -148,13 +151,13 @@ impl fmt::Display for NarInfo {
     writeln!(f, "NarHash: {}", self.nar_hash)?;
     writeln!(f, "NarSize: {}", self.nar_size)?;
     writeln!(f, "References: {}", self.references.join(" "))?;
-    if let Some(deriver) = &self.deriver {
+    if let Some(deriver) = self.deriver.as_ref() {
       writeln!(f, "Deriver: {deriver}")?;
     }
     for sig in &self.sig {
       writeln!(f, "Sig: {sig}")?;
     }
-    if let Some(ca) = &self.ca {
+    if let Some(ca) = self.ca.as_ref() {
       writeln!(f, "CA: {ca}")?;
     }
     Ok(())

@@ -1,5 +1,5 @@
 use hallmark::{
-  NarInfo,
+  narinfo::NarInfo,
   nixbase32,
   store_path::{Method, StorePath, build_ca_path, build_text_path},
 };
@@ -57,36 +57,32 @@ fn narinfo_tolerates_unknown_keys_and_blank_lines() {
 
 #[test]
 fn compression_variants_parse() {
-  for c in ["xz", "zstd", "bzip2", "none", "br"] {
+  for compression in ["xz", "zstd", "bzip2", "none", "br"] {
     let text = format!(
       "StorePath: /nix/store/00bgd045z0d4icpbc2yyz4gx48ak44la-x\nURL: \
-       u\nCompression: {c}\nNarHash: sha256:z\nNarSize: 1\n"
+       u\nCompression: {compression}\nNarHash: sha256:z\nNarSize: 1\n"
     );
-    assert_eq!(NarInfo::parse_str(&text).unwrap().compression, c);
+    assert_eq!(NarInfo::parse_str(&text).unwrap().compression, compression);
   }
-}
-
-fn digest_from(b32: &str) -> [u8; 32] {
-  nixbase32::decode(b32.as_bytes())
-    .unwrap()
-    .try_into()
-    .unwrap()
 }
 
 #[test]
 fn text_path_known_vector() {
-  let p = build_text_path("foo", b"bar", &[]).unwrap();
+  let path = build_text_path("foo", b"bar", &[]).unwrap();
   assert_eq!(
-    p.as_str(),
+    path.as_str(),
     "/nix/store/vxjiwkjkn7x4079qvh1jkl5pn05j2aw0-foo"
   );
 }
 
 #[test]
 fn recursive_path_with_reference_known_vector() {
-  let digest =
-    digest_from("1xqkzcb3909fp07qngljr4wcdnrh1gdam1m2n29i6hhrxlmkgkv1");
-  let p = build_ca_path(
+  let digest: [u8; 32] =
+    nixbase32::decode(b"1xqkzcb3909fp07qngljr4wcdnrh1gdam1m2n29i6hhrxlmkgkv1")
+      .unwrap()
+      .try_into()
+      .unwrap();
+  let path = build_ca_path(
     Method::Recursive,
     &digest,
     "baz",
@@ -95,7 +91,7 @@ fn recursive_path_with_reference_known_vector() {
   )
   .unwrap();
   assert_eq!(
-    p.as_str(),
+    path.as_str(),
     "/nix/store/s89y431zzhmdn3k8r96rvakryddkpv2v-baz"
   );
 }
@@ -103,10 +99,10 @@ fn recursive_path_with_reference_known_vector() {
 #[test]
 fn flat_path_is_valid_and_rejects_references() {
   let digest = [0x11_u8; 32];
-  let p = build_ca_path(Method::Flat, &digest, "f", &[], false).unwrap();
-  assert!(StorePath::parse(p.as_str()).is_ok());
+  let path = build_ca_path(Method::Flat, &digest, "f", &[], false).unwrap();
+  StorePath::parse(path.as_str()).unwrap();
   let refs = ["/nix/store/00000000000000000000000000000000-x"];
-  assert!(build_ca_path(Method::Flat, &digest, "f", &refs, false).is_err());
+  build_ca_path(Method::Flat, &digest, "f", &refs, false).unwrap_err();
 }
 
 #[test]
@@ -146,7 +142,7 @@ fn extra_references_change_recursive_path() {
 #[test]
 fn ca_path_construction_is_deterministic() {
   let digest = [0x44_u8; 32];
-  let a = build_ca_path(Method::Text, &digest, "n", &[], false).unwrap();
-  let b = build_ca_path(Method::Text, &digest, "n", &[], false).unwrap();
-  assert_eq!(a, b);
+  let first = build_ca_path(Method::Text, &digest, "n", &[], false).unwrap();
+  let second = build_ca_path(Method::Text, &digest, "n", &[], false).unwrap();
+  assert_eq!(first, second);
 }
