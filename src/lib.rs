@@ -6,16 +6,17 @@
 )]
 #![doc = include_str!("../README.md")]
 
-#[cfg(any(feature = "store_path", feature = "fingerprint"))]
-pub mod nixbase32;
+#[cfg(feature = "store_path")] pub mod nixbase32;
+
+#[cfg(feature = "store_path")] pub mod base64;
+
+#[cfg(feature = "store_path")] pub mod hash;
 
 #[cfg(feature = "store_path")] pub mod store_path;
 
 #[cfg(feature = "narinfo")] pub mod narinfo;
 
 #[cfg(feature = "fingerprint")] pub mod fingerprint;
-
-#[cfg(feature = "sign")] pub mod base64;
 
 #[cfg(feature = "sign")] pub mod sign;
 

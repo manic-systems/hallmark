@@ -16,9 +16,9 @@ rules other tools build on, with each concern behind its own feature flag.
 
 | Feature       | Default | Pulls in                         | Provides                                                                            |
 | ------------- | ------- | -------------------------------- | ----------------------------------------------------------------------------------- |
-| `store_path`  | yes     | `hmac-sha256`                    | `/nix/store/<hash>-<name>` parsing, nixbase32, content-addressed paths              |
-| `narinfo`     | yes     | -                                | `.narinfo` parse and render                                                         |
-| `fingerprint` | yes     | `narinfo`                        | the exact string Nix signs, plus nar-hash normalization and parsing                 |
+| `store_path`  | yes     | `hmac-sha256`                    | `/nix/store/<hash>-<name>` parsing, nixbase32, hashes, content addresses and paths  |
+| `narinfo`     | yes     | `store_path`                     | typed `.narinfo` parse and render                                                   |
+| `fingerprint` | yes     | `narinfo`                        | the exact string Nix signs                                                          |
 | `sign`        | yes     | `ed25519-compact`, `fingerprint` | Ed25519 signing and verification in Nix's `name:base64` format                      |
 | `opt_size`    | yes     | -                                | smaller, faster-compiling Ed25519 code for `sign`, at about 23% slower verification |
 | `nar`         | no      | -                                | NAR reader, writer, in-memory tree, and filesystem dump                             |

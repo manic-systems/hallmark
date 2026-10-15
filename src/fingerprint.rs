@@ -2,102 +2,24 @@
 
 use crate::{
   narinfo::NarInfo,
-  nixbase32,
+  store_path::StorePath,
 };
 
-const fn nibble(digit: u8) -> Option<u8> {
-  match digit {
-    b'0'..=b'9' => Some(digit - b'0'),
-    b'a'..=b'f' => Some(digit - b'a' + 10),
-    b'A'..=b'F' => Some(digit - b'A' + 10),
-    _ => None,
-  }
-}
-
-fn hex_decode(hex: &str) -> Option<Vec<u8>> {
-  if !hex.len().is_multiple_of(2) {
-    return None;
-  }
-  let mut out = Vec::with_capacity(hex.len() / 2);
-  for &[high, low] in hex.as_bytes().as_chunks::<2>().0 {
-    out.push((nibble(high)? << 4_u8) | nibble(low)?);
-  }
-  Some(out)
-}
-
-/// Normalize a `sha256:<64 hex>` nar-hash to `sha256:<52 nixbase32>`.
-///
-/// `atticd` serves `NarHash` as hex but signs over the base32 form, so the
-/// fingerprint must be recomputed against base32 to verify those signatures.
-/// Inputs already in base32, or not recognizably hex, are returned unchanged.
-///
-/// # Returns
-///
-/// The base32 form when `s` is a valid `sha256:` hex digest; otherwise `s`
-/// unchanged.
-#[must_use]
-pub fn normalize_nar_hash(nar_hash: &str) -> String {
-  let Some((algo, digest)) = nar_hash.split_once(':') else {
-    return nar_hash.to_owned();
-  };
-  if algo == "sha256"
-    && digest.len() == 64
-    && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
-    && let Some(bytes) = hex_decode(digest)
-  {
-    return format!("{algo}:{}", nixbase32::encode(&bytes));
-  }
-  nar_hash.to_owned()
-}
-
-/// Decode a `sha256:<digest>` nar-hash into its 32 raw bytes.
-///
-/// Accepts both the 64-character hex and 52-character nixbase32 encodings Nix
-/// and binary caches use interchangeably.
-///
-/// # Returns
-///
-/// `Some` containing the 32 raw bytes for a valid `sha256:` digest; `None`
-/// for a non-`sha256` algorithm, a missing `:` separator, or a digest with
-/// the wrong length or encoding.
-#[must_use]
-pub fn parse_nar_hash(nar_hash: &str) -> Option<[u8; 32]> {
-  let (algo, digest) = nar_hash.split_once(':')?;
-  if algo != "sha256" {
-    return None;
-  }
-  let bytes = match digest.len() {
-    64 => hex_decode(digest)?,
-    52 => nixbase32::decode(digest.as_bytes()).ok()?,
-    _ => return None,
-  };
-  bytes.try_into().ok()
-}
-
-fn absolutize(store_dir: &str, reference: &str) -> String {
-  if reference.starts_with('/') {
-    reference.to_owned()
-  } else {
-    format!("{store_dir}/{reference}")
-  }
-}
-
 /// The Nix fingerprint:
-/// `1;<store_path>;<nar_hash>;<nar_size>;<comma-separated sorted abs refs>`.
+/// `1;<store_path>;<nar_hash>;<nar_size>;<comma-separated sorted refs>`.
+///
+/// The NAR hash always renders as nixbase32, so narinfos whose `NarHash` was
+/// served as hex (as `atticd` does) still verify.
 #[must_use]
-pub fn fingerprint(store_dir: &str, narinfo: &NarInfo) -> String {
-  let mut refs: Vec<String> = narinfo
-    .references
-    .iter()
-    .map(|reference| absolutize(store_dir, reference))
-    .collect();
-  refs.sort();
+pub fn fingerprint(narinfo: &NarInfo) -> String {
+  let mut references: Vec<_> = narinfo.references.iter().map(StorePath::as_str).collect();
+  references.sort_unstable();
   format!(
     "1;{};{};{};{}",
     narinfo.store_path,
-    normalize_nar_hash(&narinfo.nar_hash),
+    narinfo.nar_hash,
     narinfo.nar_size,
-    refs.join(",")
+    references.join(",")
   )
 }
 
@@ -107,25 +29,18 @@ mod tests {
 
   #[test]
   fn known_vector() {
-    let ni = NarInfo {
-      store_path: "/nix/store/abc-test".to_owned(),
-      nar_hash: "sha256:xyz".to_owned(),
-      nar_size: 100,
-      references: vec!["foo".to_owned(), "bar".to_owned()],
-      ..Default::default()
-    };
+    let ni = NarInfo::parse_str(
+      "StorePath: /nix/store/00bgd045z0d4icpbc2yyz4gx48ak44la-test\nURL: nar/x.nar\nNarHash: \
+       sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\nNarSize: \
+       100\nReferences: 7rjj0i6b2cvz01iw7hd1xk5f0r48rd8w-foo \
+       00bgd045z0d4icpbc2yyz4gx48ak44la-bar\n",
+    )
+    .unwrap();
     assert_eq!(
-      fingerprint("/nix/store", &ni),
-      "1;/nix/store/abc-test;sha256:xyz;100;/nix/store/bar,/nix/store/foo"
+      fingerprint(&ni),
+      "1;/nix/store/00bgd045z0d4icpbc2yyz4gx48ak44la-test;sha256:\
+       0mdqa9w1p6cmli6976v4wi0sw9r4p5prkj7lzfd1877wk11c9c73;100;/nix/store/\
+       00bgd045z0d4icpbc2yyz4gx48ak44la-bar,/nix/store/7rjj0i6b2cvz01iw7hd1xk5f0r48rd8w-foo"
     );
-  }
-
-  #[test]
-  fn normalizes_attic_hex_hash() {
-    let hex = "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
-    let b32 = "sha256:0mdqa9w1p6cmli6976v4wi0sw9r4p5prkj7lzfd1877wk11c9c73";
-    assert_eq!(normalize_nar_hash(hex), b32);
-    assert_eq!(normalize_nar_hash(b32), b32);
-    assert_eq!(normalize_nar_hash("md5:abc"), "md5:abc");
   }
 }

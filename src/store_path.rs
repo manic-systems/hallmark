@@ -2,12 +2,22 @@
 //! content-addressed path construction Nix uses for fixed-output derivations,
 //! `builtins.toFile` and `nix-store --add`.
 
-use std::fmt;
+use std::{
+  fmt,
+  str::FromStr,
+};
 
-use hmac_sha256::Hash;
+use hmac_sha256::Hash as Sha256;
 use thiserror::Error;
 
-use crate::nixbase32;
+use crate::{
+  hash::{
+    Algorithm,
+    Hash,
+    ParseHashError,
+  },
+  nixbase32,
+};
 
 /// The canonical Nix store directory, without a trailing slash.
 pub const STORE_DIR: &str = "/nix/store";
@@ -53,22 +63,13 @@ pub struct StoreDirError {
 
 /// Why a content-addressed store path could not be constructed.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
-pub enum BuildError {
-  /// The requested name is not a valid store-path name.
-  #[error("invalid store path name {name:?}: {source}")]
-  Name {
-    /// The rejected name.
-    name:   String,
-    /// The validation error it produced.
-    source: ParseStorePathError,
-  },
-  /// A reference string could not be interpreted as a store path.
-  #[error("invalid reference {0:?}")]
-  Reference(String),
-  /// A [`Method::Flat`] path was given references, which flat hashing cannot
-  /// express.
-  #[error("flat content-addressed paths cannot have references")]
-  FlatWithReferences,
+#[error("invalid store path name {name:?}")]
+pub struct BuildError {
+  /// The rejected name.
+  pub name:   String,
+  /// The validation error it produced.
+  #[source]
+  pub source: ParseStorePathError,
 }
 
 const fn is_name_char(byte: u8) -> bool {
@@ -159,7 +160,7 @@ impl<'path> StorePathRef<'path> {
   )]
   #[must_use]
   pub fn hash(&self) -> &'path str {
-    let start = self.path.len() - self.component().len();
+    let start = self.path.len() - self.base_name().len();
     &self.path[start..start + ENCODED_DIGEST_SIZE]
   }
 
@@ -170,7 +171,7 @@ impl<'path> StorePathRef<'path> {
   )]
   #[must_use]
   pub fn name(&self) -> &'path str {
-    let component = self.component();
+    let component = self.base_name();
     &component[ENCODED_DIGEST_SIZE + 1..]
   }
 
@@ -196,7 +197,9 @@ impl<'path> StorePathRef<'path> {
     self.path
   }
 
-  fn component(&self) -> &'path str {
+  /// The `<hash>-<name>` part, without the store directory.
+  #[must_use]
+  pub fn base_name(&self) -> &'path str {
     self
       .path
       .rsplit_once('/')
@@ -274,6 +277,12 @@ impl StorePath {
   pub fn as_str(&self) -> &str {
     &self.path
   }
+
+  /// The `<hash>-<name>` part, without the store directory.
+  #[must_use]
+  pub fn base_name(&self) -> &str {
+    self.as_ref().base_name()
+  }
 }
 
 impl fmt::Display for StorePath {
@@ -340,6 +349,19 @@ impl StoreDir {
       path: path.to_owned(),
     })
   }
+
+  /// The store path for the `<hash>-<name>` entry `base_name` inside this
+  /// directory.
+  ///
+  /// # Errors
+  ///
+  /// Returns the component errors from [`StorePathRef::from_bytes`].
+  pub fn join(&self, base_name: &str) -> Result<StorePath, ParseStorePathError> {
+    validate_component(base_name)?;
+    Ok(StorePath {
+      path: format!("{}/{base_name}", self.path),
+    })
+  }
 }
 
 impl Default for StoreDir {
@@ -356,30 +378,129 @@ impl fmt::Display for StoreDir {
   }
 }
 
-/// How a content-addressed dump is addressed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Method {
-  /// `text:sha256`, as used by `builtins.toFile` and `nix-store --add`.
-  Text,
-  /// `fixed:sha256`, a flat fixed-output derivation.
-  Flat,
-  /// `fixed:r:sha256`, a recursive (NAR) fixed-output derivation.
-  Recursive,
+/// Why a content address could not be parsed.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum ParseContentAddressError {
+  /// The prefix is not `text:`, `fixed:` or `fixed:r:`.
+  #[error("unknown content-address method in {0:?}")]
+  UnknownMethod(String),
+  /// A `text:` address used a hash other than SHA-256.
+  #[error("text content addresses must use sha256, not {0}")]
+  TextNotSha256(Algorithm),
+  /// The hash after the method prefix is invalid.
+  #[error("invalid content-address hash")]
+  Hash(#[source] ParseHashError),
 }
 
-impl Method {
-  /// Render the `<type>:sha256:<nixbase32>` content address for `digest`.
-  ///
-  /// # Returns
-  ///
-  /// The Nix content-address string for this hashing method and `digest`.
+/// A narinfo `CA` value: how a content-addressed path was hashed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ContentAddress {
+  /// `text:sha256:…`, as used by `builtins.toFile` and `nix-store --add`.
+  Text([u8; 32]),
+  /// `fixed:<algo>:…`, a flat fixed-output derivation.
+  Flat(Hash),
+  /// `fixed:r:<algo>:…`, a recursive (NAR) fixed-output derivation.
+  Recursive(Hash),
+}
+
+impl FromStr for ContentAddress {
+  type Err = ParseContentAddressError;
+
+  fn from_str(input: &str) -> Result<Self, Self::Err> {
+    let parse_hash = |hash: &str| hash.parse::<Hash>().map_err(ParseContentAddressError::Hash);
+    if let Some(hash) = input.strip_prefix("text:") {
+      return match parse_hash(hash)? {
+        Hash::Sha256(digest) => Ok(Self::Text(digest)),
+        other @ (Hash::Sha1(_) | Hash::Sha512(_)) => {
+          Err(ParseContentAddressError::TextNotSha256(other.algorithm()))
+        },
+      };
+    }
+    if let Some(hash) = input.strip_prefix("fixed:r:") {
+      return Ok(Self::Recursive(parse_hash(hash)?));
+    }
+    if let Some(hash) = input.strip_prefix("fixed:") {
+      return Ok(Self::Flat(parse_hash(hash)?));
+    }
+    Err(ParseContentAddressError::UnknownMethod(input.to_owned()))
+  }
+}
+
+impl fmt::Display for ContentAddress {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    match *self {
+      Self::Text(digest) => write!(f, "text:{}", Hash::Sha256(digest)),
+      Self::Flat(hash) => write!(f, "fixed:{hash}"),
+      Self::Recursive(hash) => write!(f, "fixed:r:{hash}"),
+    }
+  }
+}
+
+/// The inputs that determine a content-addressed store path.
+///
+/// Each variant carries only what its hashing scheme can express, so flat
+/// paths have no references and only recursive paths can refer to themselves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContentAddressed<'refs> {
+  /// File contents hashed with SHA-256, as `builtins.toFile` does.
+  Text {
+    /// SHA-256 of the file contents.
+    sha256:     [u8; 32],
+    /// The store paths the file refers to.
+    references: &'refs [StorePath],
+  },
+  /// A flat fixed-output derivation.
+  Flat {
+    /// SHA-256 of the output file.
+    sha256: [u8; 32],
+  },
+  /// A recursive (NAR) fixed-output derivation.
+  Recursive {
+    /// SHA-256 of the output's NAR serialization.
+    sha256:     [u8; 32],
+    /// The store paths the output refers to.
+    references: &'refs [StorePath],
+    /// Whether the output refers to its own path.
+    self_ref:   bool,
+  },
+}
+
+impl ContentAddressed<'_> {
+  /// The narinfo `CA` value these inputs produce.
   #[must_use]
-  pub fn content_address(self, digest: &[u8; 32]) -> String {
-    let hash = nixbase32::encode(digest);
-    match self {
-      Self::Text => format!("text:sha256:{hash}"),
-      Self::Flat => format!("fixed:sha256:{hash}"),
-      Self::Recursive => format!("fixed:r:sha256:{hash}"),
+  pub const fn content_address(&self) -> ContentAddress {
+    match *self {
+      Self::Text { sha256, .. } => ContentAddress::Text(sha256),
+      Self::Flat { sha256 } => ContentAddress::Flat(Hash::Sha256(sha256)),
+      Self::Recursive { sha256, .. } => ContentAddress::Recursive(Hash::Sha256(sha256)),
+    }
+  }
+
+  /// The `/nix/store` path these inputs produce under `name`.
+  ///
+  /// # Errors
+  ///
+  /// Returns [`BuildError`] if `name` is not a valid store-path name.
+  pub fn store_path(&self, name: &str) -> Result<StorePath, BuildError> {
+    match *self {
+      Self::Text { sha256, references } => {
+        from_fingerprint_parts(&format_references("text", references, false), &sha256, name)
+      },
+      Self::Flat { sha256 } => {
+        let inner = Sha256::hash(format!("fixed:out:sha256:{}:", hex_lower(&sha256)).as_bytes());
+        from_fingerprint_parts("output:out", &inner, name)
+      },
+      Self::Recursive {
+        sha256,
+        references,
+        self_ref,
+      } => {
+        from_fingerprint_parts(
+          &format_references("source", references, self_ref),
+          &sha256,
+          name,
+        )
+      },
     }
   }
 }
@@ -402,11 +523,11 @@ fn compress_hash<const N: usize>(input: &[u8]) -> [u8; N] {
   out
 }
 
-fn format_references(ty: &str, references: &[&str], has_self_ref: bool) -> String {
+fn format_references(ty: &str, references: &[StorePath], has_self_ref: bool) -> String {
   let mut out = ty.to_owned();
   for reference in references {
     out.push(':');
-    out.push_str(reference);
+    out.push_str(reference.as_str());
   }
   if has_self_ref {
     out.push_str(":self");
@@ -420,68 +541,36 @@ fn from_fingerprint_parts(
   name: &str,
 ) -> Result<StorePath, BuildError> {
   let fingerprint = format!("{ty}:sha256:{}:{STORE_DIR}:{name}", hex_lower(inner_digest));
-  let compressed = compress_hash::<DIGEST_SIZE>(&Hash::hash(fingerprint.as_bytes()));
+  let compressed = compress_hash::<DIGEST_SIZE>(&Sha256::hash(fingerprint.as_bytes()));
   StorePath::from_digest_and_name(&compressed, name).map_err(|source| {
-    BuildError::Name {
+    BuildError {
       name: name.to_owned(),
       source,
     }
   })
 }
 
-/// Build a content-addressed store path.
-///
-/// `digest` is the sha256 of the dump for [`Method::Flat`] /
-/// [`Method::Recursive`], or of the file contents for [`Method::Text`].
-/// `references` are absolute store paths.
-///
-/// # Errors
-///
-/// Returns [`BuildError::FlatWithReferences`] if `method` is [`Method::Flat`]
-/// and `references` is non-empty, or [`BuildError::Name`] if `name` is not
-/// a valid store-path name.
-pub fn build_ca_path(
-  method: Method,
-  digest: &[u8; 32],
-  name: &str,
-  references: &[&str],
-  has_self_ref: bool,
-) -> Result<StorePath, BuildError> {
-  match method {
-    Method::Text => {
-      let ty = format_references("text", references, false);
-      from_fingerprint_parts(&ty, digest, name)
-    },
-    Method::Recursive => {
-      let ty = format_references("source", references, has_self_ref);
-      from_fingerprint_parts(&ty, digest, name)
-    },
-    Method::Flat => {
-      if !references.is_empty() {
-        return Err(BuildError::FlatWithReferences);
-      }
-      let inner = Hash::hash(format!("fixed:out:sha256:{}:", hex_lower(digest)).as_bytes());
-      from_fingerprint_parts("output:out", &inner, name)
-    },
-  }
-}
-
 /// Build a `text:sha256` store path from file contents.
 ///
 /// # Errors
 ///
-/// See [`build_ca_path`].
+/// Returns [`BuildError`] if `name` is not a valid store-path name.
 pub fn build_text_path(
   name: &str,
   content: &[u8],
-  references: &[&str],
+  references: &[StorePath],
 ) -> Result<StorePath, BuildError> {
-  let digest = Hash::hash(content);
-  build_ca_path(Method::Text, &digest, name, references, false)
+  ContentAddressed::Text {
+    sha256: Sha256::hash(content),
+    references,
+  }
+  .store_path(name)
 }
 
 #[cfg(test)]
 mod tests {
+  use std::slice;
+
   use super::*;
 
   #[test]
@@ -580,7 +669,7 @@ mod tests {
   #[test]
   fn text_path_with_references() {
     let inner = build_text_path("foo", b"bar", &[]).unwrap();
-    let outer = build_text_path("baz", inner.as_str().as_bytes(), &[inner.as_str()]).unwrap();
+    let outer = build_text_path("baz", inner.as_str().as_bytes(), slice::from_ref(&inner)).unwrap();
     assert_eq!(
       outer.as_str(),
       "/nix/store/5xd714cbfnkz02h2vbsj4fm03x3f15nf-baz"
@@ -594,26 +683,17 @@ mod tests {
         .unwrap()
         .try_into()
         .unwrap();
-    let store_path = build_ca_path(
-      Method::Recursive,
-      &digest,
-      "baz",
-      &["/nix/store/dxwkwjzdaq7ka55pkk252gh32bgpmql4-foo"],
-      false,
-    )
+    let references = [StorePath::parse("/nix/store/dxwkwjzdaq7ka55pkk252gh32bgpmql4-foo").unwrap()];
+    let store_path = ContentAddressed::Recursive {
+      sha256:     digest,
+      references: &references,
+      self_ref:   false,
+    }
+    .store_path("baz")
     .unwrap();
     assert_eq!(
       store_path.as_str(),
       "/nix/store/s89y431zzhmdn3k8r96rvakryddkpv2v-baz"
-    );
-  }
-
-  #[test]
-  fn flat_with_references_rejected() {
-    let refs = ["/nix/store/00000000000000000000000000000000-x"];
-    assert_eq!(
-      build_ca_path(Method::Flat, &[0; 32], "x", &refs, false),
-      Err(BuildError::FlatWithReferences)
     );
   }
 }

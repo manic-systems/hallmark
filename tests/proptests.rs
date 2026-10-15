@@ -1,8 +1,19 @@
 use hallmark::{
-  narinfo::NarInfo,
+  hash::Hash,
+  narinfo::{
+    Compression,
+    NarInfo,
+    Signature,
+  },
   nixbase32,
+  store_path::{
+    ContentAddress,
+    StoreDir,
+    StorePath,
+  },
 };
 use proptest::{
+  array::uniform,
   collection::vec,
   option::of,
   prelude::*,
@@ -26,32 +37,48 @@ proptest! {
   }
 }
 
+const BASE_NAME: &str = "[0-9a-df-np-sv-z]{32}-[a-z0-9.+-]{1,24}";
+const DRV_BASE_NAME: &str = "[0-9a-df-np-sv-z]{32}-[a-z0-9.+-]{1,24}\\.drv";
+
+fn arb_store_path(pattern: &'static str) -> impl Strategy<Value = StorePath> {
+  pattern.prop_filter_map("valid store path", |base_name| {
+    StoreDir::default().join(&base_name).ok()
+  })
+}
+
+fn arb_signature() -> impl Strategy<Value = Signature> {
+  ("[a-z0-9.-]{1,12}", uniform::<_, 64>(any::<u8>()))
+    .prop_filter_map("valid signature", |(key_name, bytes)| {
+      Signature::new(key_name, bytes).ok()
+    })
+}
+
 prop_compose! {
   fn arb_narinfo()(
-    store_path in "/nix/store/[0-9a-df-np-sv-z]{32}-[a-z0-9.+-]{1,24}",
+    store_path in arb_store_path(BASE_NAME),
     url in "[a-zA-Z0-9._+/=-]{1,24}",
-    compression in prop_oneof!["xz", "zstd", "none", "bzip2"],
-    file_hash in of("sha256:[0-9a-df-np-sv-z]{52}"),
+    compression in prop_oneof!["xz", "zstd", "none", "bzip2", "lz77"],
+    file_hash in of(any::<[u8; 32]>()),
     file_size in of(any::<u64>()),
-    nar_hash in "sha256:[0-9a-df-np-sv-z]{52}",
+    nar_hash in any::<[u8; 32]>(),
     nar_size in any::<u64>(),
-    references in vec("[a-z0-9.+-]{1,24}", 0..5),
-    deriver in of("[a-z0-9.+-]{1,24}\\.drv"),
-    sig in vec("[a-z0-9.-]{1,12}:[A-Za-z0-9+/]{8,40}", 0..4),
-    ca in of("fixed:r:sha256:[0-9a-df-np-sv-z]{52}"),
+    references in vec(arb_store_path(BASE_NAME), 0..5),
+    deriver in of(arb_store_path(DRV_BASE_NAME)),
+    sig in vec(arb_signature(), 0..4),
+    ca in of(any::<[u8; 32]>()),
   ) -> NarInfo {
     NarInfo {
       store_path,
       url,
-      compression,
-      file_hash,
+      compression: Compression::from(compression.as_str()),
+      file_hash: file_hash.map(Hash::Sha256),
       file_size,
-      nar_hash,
+      nar_hash: Hash::Sha256(nar_hash),
       nar_size,
       references,
       deriver,
       sig,
-      ca,
+      ca: ca.map(|digest| ContentAddress::Recursive(Hash::Sha256(digest))),
     }
   }
 }

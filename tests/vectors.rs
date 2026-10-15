@@ -1,23 +1,32 @@
 use hallmark::{
-  narinfo::NarInfo,
+  narinfo::{
+    Compression,
+    NarInfo,
+  },
   nixbase32,
   store_path::{
-    Method,
+    BuildError,
+    ContentAddress,
+    ContentAddressed,
+    ParseStorePathError,
     StorePath,
-    build_ca_path,
     build_text_path,
   },
 };
 
-const FULL: &str = "StorePath: /nix/store/00bgd045z0d4icpbc2yyz4gx48ak44la-net-tools-1.60\nURL: \
-                    nar/1q8w.nar.xz\nCompression: xz\nFileHash: sha256:1q8wabc\nFileSize: \
-                    4096\nNarHash: \
-                    sha256:0mdqa9w1p6cmli6976v4wi0sw9r4p5prkj7lzfd1877wk11c9c73\nNarSize: \
-                    20480\nReferences: 00bgd045z0d4icpbc2yyz4gx48ak44la-net-tools-1.60 \
-                    7rjj0i6b2cvz01iw7hd1xk5f0r48rd8w-glibc-2.39\nDeriver: \
-                    xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx-net-tools-1.60.drv\nSig: \
-                    cache.nixos.org-1:aaaa\nSig: cache.example.org-1:bbbb\nCA: \
-                    fixed:r:sha256:0mdqa9w1p6cmli6976v4wi0sw9r4p5prkj7lzfd1877wk11c9c73\n";
+const FULL: &str =
+  "StorePath: /nix/store/00bgd045z0d4icpbc2yyz4gx48ak44la-net-tools-1.60\nURL: \
+   nar/1q8w.nar.xz\nCompression: xz\nFileHash: \
+   sha256:0mdqa9w1p6cmli6976v4wi0sw9r4p5prkj7lzfd1877wk11c9c73\nFileSize: 4096\nNarHash: \
+   sha256:0mdqa9w1p6cmli6976v4wi0sw9r4p5prkj7lzfd1877wk11c9c73\nNarSize: 20480\nReferences: \
+   00bgd045z0d4icpbc2yyz4gx48ak44la-net-tools-1.60 \
+   7rjj0i6b2cvz01iw7hd1xk5f0r48rd8w-glibc-2.39\nDeriver: \
+   xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx-net-tools-1.60.drv\nSig: \
+   cache.nixos.org-1:\
+   AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==\nSig: \
+   cache.example.org-1:\
+   AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==\nCA: \
+   fixed:r:sha256:0mdqa9w1p6cmli6976v4wi0sw9r4p5prkj7lzfd1877wk11c9c73\n";
 
 #[test]
 fn full_narinfo_roundtrips_canonically() {
@@ -26,9 +35,9 @@ fn full_narinfo_roundtrips_canonically() {
   assert_eq!(ni.sig.len(), 2);
   assert_eq!(ni.file_size, Some(4096));
   assert_eq!(ni.nar_size, 20480);
-  assert!(ni.ca.as_deref().unwrap().starts_with("fixed:r:sha256:"));
+  assert!(matches!(ni.ca, Some(ContentAddress::Recursive(_))));
   assert_eq!(
-    ni.deriver.as_deref().unwrap(),
+    ni.deriver.as_ref().unwrap().base_name(),
     "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx-net-tools-1.60.drv"
   );
   assert_eq!(ni.render(), FULL);
@@ -37,7 +46,8 @@ fn full_narinfo_roundtrips_canonically() {
 #[test]
 fn minimal_narinfo_omitting_optional_fields() {
   let text = "StorePath: /nix/store/00bgd045z0d4icpbc2yyz4gx48ak44la-x\nURL: \
-              nar/x.nar\nCompression: none\nNarHash: sha256:zzz\nNarSize: 7\n";
+              nar/x.nar\nCompression: none\nNarHash: \
+              sha256:0mdqa9w1p6cmli6976v4wi0sw9r4p5prkj7lzfd1877wk11c9c73\nNarSize: 7\n";
   let ni = NarInfo::parse_str(text).unwrap();
   assert!(ni.file_hash.is_none());
   assert!(ni.file_size.is_none());
@@ -51,9 +61,9 @@ fn minimal_narinfo_omitting_optional_fields() {
 fn narinfo_tolerates_unknown_keys_and_blank_lines() {
   let text = "StorePath: /nix/store/00bgd045z0d4icpbc2yyz4gx48ak44la-x\n\nURL: \
               nar/x.nar\nSomethingNew: ignore me\nCompression: zstd\nNarHash: \
-              sha256:zzz\nNarSize: 1\n";
+              sha256:0mdqa9w1p6cmli6976v4wi0sw9r4p5prkj7lzfd1877wk11c9c73\nNarSize: 1\n";
   let ni = NarInfo::parse_str(text).unwrap();
-  assert_eq!(ni.compression, "zstd");
+  assert_eq!(ni.compression, Compression::Zstd);
   assert_eq!(ni.url, "nar/x.nar");
 }
 
@@ -62,9 +72,12 @@ fn compression_variants_parse() {
   for compression in ["xz", "zstd", "bzip2", "none", "br"] {
     let text = format!(
       "StorePath: /nix/store/00bgd045z0d4icpbc2yyz4gx48ak44la-x\nURL: u\nCompression: \
-       {compression}\nNarHash: sha256:z\nNarSize: 1\n"
+       {compression}\nNarHash: \
+       sha256:0mdqa9w1p6cmli6976v4wi0sw9r4p5prkj7lzfd1877wk11c9c73\nNarSize: 1\n"
     );
-    assert_eq!(NarInfo::parse_str(&text).unwrap().compression, compression);
+    let parsed = NarInfo::parse_str(&text).unwrap().compression;
+    assert_eq!(parsed.to_string(), compression);
+    assert!(!matches!(parsed, Compression::Other(_)));
   }
 }
 
@@ -77,19 +90,35 @@ fn text_path_known_vector() {
   );
 }
 
+fn foo() -> Result<StorePath, ParseStorePathError> {
+  StorePath::parse("/nix/store/dxwkwjzdaq7ka55pkk252gh32bgpmql4-foo")
+}
+
+fn recursive(
+  sha256: [u8; 32],
+  references: &[StorePath],
+  self_ref: bool,
+) -> Result<StorePath, BuildError> {
+  ContentAddressed::Recursive {
+    sha256,
+    references,
+    self_ref,
+  }
+  .store_path("n")
+}
+
 #[test]
 fn recursive_path_with_reference_known_vector() {
-  let digest: [u8; 32] = nixbase32::decode(b"1xqkzcb3909fp07qngljr4wcdnrh1gdam1m2n29i6hhrxlmkgkv1")
+  let sha256: [u8; 32] = nixbase32::decode(b"1xqkzcb3909fp07qngljr4wcdnrh1gdam1m2n29i6hhrxlmkgkv1")
     .unwrap()
     .try_into()
     .unwrap();
-  let path = build_ca_path(
-    Method::Recursive,
-    &digest,
-    "baz",
-    &["/nix/store/dxwkwjzdaq7ka55pkk252gh32bgpmql4-foo"],
-    false,
-  )
+  let path = ContentAddressed::Recursive {
+    sha256,
+    references: &[foo().unwrap()],
+    self_ref: false,
+  }
+  .store_path("baz")
   .unwrap();
   assert_eq!(
     path.as_str(),
@@ -98,51 +127,35 @@ fn recursive_path_with_reference_known_vector() {
 }
 
 #[test]
-fn flat_path_is_valid_and_rejects_references() {
-  let digest = [0x11_u8; 32];
-  let path = build_ca_path(Method::Flat, &digest, "f", &[], false).unwrap();
+fn flat_path_is_valid() {
+  let path = ContentAddressed::Flat { sha256: [0x11; 32] }
+    .store_path("f")
+    .unwrap();
   StorePath::parse(path.as_str()).unwrap();
-  let refs = ["/nix/store/00000000000000000000000000000000-x"];
-  build_ca_path(Method::Flat, &digest, "f", &refs, false).unwrap_err();
 }
 
 #[test]
 fn self_reference_changes_recursive_path() {
-  let digest = [0x22_u8; 32];
-  let without = build_ca_path(Method::Recursive, &digest, "n", &[], false).unwrap();
-  let with = build_ca_path(Method::Recursive, &digest, "n", &[], true).unwrap();
-  assert_ne!(without.as_str(), with.as_str());
+  assert_ne!(
+    recursive([0x22; 32], &[], false).unwrap(),
+    recursive([0x22; 32], &[], true).unwrap()
+  );
 }
 
 #[test]
 fn extra_references_change_recursive_path() {
-  let digest = [0x33_u8; 32];
-  let one = build_ca_path(
-    Method::Recursive,
-    &digest,
-    "n",
-    &["/nix/store/dxwkwjzdaq7ka55pkk252gh32bgpmql4-foo"],
-    false,
-  )
-  .unwrap();
-  let two = build_ca_path(
-    Method::Recursive,
-    &digest,
-    "n",
-    &[
-      "/nix/store/dxwkwjzdaq7ka55pkk252gh32bgpmql4-foo",
-      "/nix/store/s89y431zzhmdn3k8r96rvakryddkpv2v-baz",
-    ],
-    false,
-  )
-  .unwrap();
-  assert_ne!(one.as_str(), two.as_str());
+  let baz = StorePath::parse("/nix/store/s89y431zzhmdn3k8r96rvakryddkpv2v-baz").unwrap();
+  assert_ne!(
+    recursive([0x33; 32], &[foo().unwrap()], false).unwrap(),
+    recursive([0x33; 32], &[foo().unwrap(), baz], false).unwrap()
+  );
 }
 
 #[test]
 fn ca_path_construction_is_deterministic() {
-  let digest = [0x44_u8; 32];
-  let first = build_ca_path(Method::Text, &digest, "n", &[], false).unwrap();
-  let second = build_ca_path(Method::Text, &digest, "n", &[], false).unwrap();
-  assert_eq!(first, second);
+  let text = ContentAddressed::Text {
+    sha256:     [0x44; 32],
+    references: &[],
+  };
+  assert_eq!(text.store_path("n").unwrap(), text.store_path("n").unwrap());
 }

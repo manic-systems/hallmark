@@ -1,17 +1,17 @@
 //! Ed25519 signing and verification of narinfo fingerprints, in Nix's
 //! `name:base64` key format.
 
-use ed25519_compact::Signature;
 use thiserror::Error;
 
 use crate::{
   base64,
   base64::DecodeError,
   fingerprint::fingerprint,
-  narinfo::NarInfo,
+  narinfo::{
+    NarInfo,
+    Signature,
+  },
 };
-
-const STORE_DIR: &str = "/nix/store";
 
 /// Why a `<name>:<base64>` key string could not be parsed.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -118,11 +118,16 @@ impl SecretKey {
     &self.name
   }
 
-  /// The `<name>:<base64>` signature over `fingerprint`.
+  /// This key's signature over `fingerprint`.
+  #[expect(
+    clippy::missing_panics_doc,
+    clippy::expect_used,
+    reason = "parse rejects an empty name and splits at the first ':', so the name is valid"
+  )]
   #[must_use]
-  pub fn sign(&self, fingerprint: &str) -> String {
-    let sig = self.key.sign(fingerprint, None);
-    format!("{}:{}", self.name, base64::encode(sig.as_ref()))
+  pub fn sign(&self, fingerprint: &str) -> Signature {
+    let signature = self.key.sign(fingerprint, None);
+    Signature::new(self.name.as_str(), *signature).expect("key names are validated on parse")
   }
 
   /// The matching public key, for `trusted-public-keys`.
@@ -186,25 +191,14 @@ impl PublicKey {
   /// Whether one of `sigs` (each `<name>:<base64>`) verifies `fingerprint`
   /// under this key.
   #[must_use]
-  pub fn verify(&self, fingerprint: &str, sigs: &[String]) -> bool {
-    for sig in sigs {
-      let Some((name, b64)) = sig.split_once(':') else {
-        continue;
-      };
-      if name != self.name {
-        continue;
-      }
-      let Ok(raw) = base64::decode(b64) else {
-        continue;
-      };
-      let Ok(signature) = Signature::from_slice(&raw) else {
-        continue;
-      };
-      if self.key.verify(fingerprint, &signature).is_ok() {
-        return true;
-      }
-    }
-    false
+  pub fn verify(&self, fingerprint: &str, sigs: &[Signature]) -> bool {
+    sigs
+      .iter()
+      .filter(|sig| sig.key_name() == self.name)
+      .any(|sig| {
+        let signature = ed25519_compact::Signature::new(*sig.bytes());
+        self.key.verify(fingerprint, &signature).is_ok()
+      })
   }
 
   /// Render as the `<name>:<base64>` form used in `trusted-public-keys`.
@@ -219,18 +213,16 @@ impl PublicKey {
   reason = "signing lives behind the `sign` feature, apart from parsing"
 )]
 impl NarInfo {
-  /// Sign this narinfo's fingerprint and append the signature, using
-  /// `/nix/store` as the store directory.
+  /// Sign this narinfo's fingerprint and append the signature.
   pub fn sign(&mut self, key: &SecretKey) {
-    let fp = fingerprint(STORE_DIR, self);
+    let fp = fingerprint(self);
     self.sig.push(key.sign(&fp));
   }
 
-  /// Whether any signature verifies under one of `keys`; store paths are
-  /// assumed to be under `/nix/store`.
+  /// Whether any signature verifies under one of `keys`.
   #[must_use]
   pub fn verify(&self, keys: &[PublicKey]) -> bool {
-    let fp = fingerprint(STORE_DIR, self);
+    let fp = fingerprint(self);
     keys.iter().any(|key| key.verify(&fp, &self.sig))
   }
 }
@@ -245,13 +237,12 @@ mod tests {
   }
 
   fn sample() -> NarInfo {
-    NarInfo {
-      store_path: "/nix/store/abc-test".to_owned(),
-      nar_hash: "sha256:abc".to_owned(),
-      nar_size: 12,
-      references: vec!["abc-test".to_owned()],
-      ..Default::default()
-    }
+    NarInfo::parse_str(
+      "StorePath: /nix/store/00bgd045z0d4icpbc2yyz4gx48ak44la-test\nURL: nar/x.nar\nNarHash: \
+       sha256:0mdqa9w1p6cmli6976v4wi0sw9r4p5prkj7lzfd1877wk11c9c73\nNarSize: 12\nReferences: \
+       00bgd045z0d4icpbc2yyz4gx48ak44la-test\n",
+    )
+    .unwrap()
   }
 
   #[test]
