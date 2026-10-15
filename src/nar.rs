@@ -7,8 +7,8 @@
 //!   NAR;
 //! - a streaming writer built from handles ([`open`], [`Node`], [`Directory`])
 //!   that serializes file bodies straight from any reader, [`dump`] which
-//!   archives a filesystem tree through it, and a streaming reader driven by
-//!   a [`Visitor`] ([`read`]);
+//!   archives a filesystem tree through it, and a streaming reader driven by a
+//!   [`Visitor`] ([`read`]);
 //! - an in-memory [`Entry`] tree with [`write_nar`] and [`read_nar`] for when
 //!   holding the whole archive is acceptable.
 //!

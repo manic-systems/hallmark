@@ -1,6 +1,6 @@
-//! Nix's base32 (not RFC 4648). The alphabet omits `e o u t` and digits are
-//! emitted most-significant-first, so a 20-byte store-path digest encodes to
-//! 32 characters and a 32-byte hash to 52.
+//! Nix's base32 (which is not RFC 4648). The alphabet omits `e o u t` and
+//! digits are emitted most-significant-first, so a 20-byte store-path digest
+//! encodes to 32 characters and a 32-byte hash to 52.
 
 use thiserror::Error;
 

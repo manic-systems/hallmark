@@ -9,10 +9,13 @@ pub use crate::nixbase32;
 
 /// The canonical Nix store directory, without a trailing slash.
 pub const STORE_DIR: &str = "/nix/store";
+
 /// [`STORE_DIR`] with the trailing slash that precedes a path component.
 pub const STORE_DIR_WITH_SLASH: &str = "/nix/store/";
+
 /// The length in bytes of the digest a store-path hash encodes.
 pub const DIGEST_SIZE: usize = 20;
+
 /// The length in nixbase32 characters of an encoded [`DIGEST_SIZE`] digest.
 pub const ENCODED_DIGEST_SIZE: usize = nixbase32::encode_len(DIGEST_SIZE);
 
