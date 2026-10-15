@@ -1,0 +1,65 @@
+name: Tag and Release
+
+on:
+  workflow_dispatch:
+  workflow_run: # zizmor: ignore[dangerous-triggers]
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+permissions: {}
+
+jobs:
+  prepare:
+    permissions:
+      contents: write
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
+    uses: manic-systems/workflows/.github/workflows/rust-release.yml@d93951cf50722594dc1d64602eb9453dc7da2fb6 # v2.3.0
+    with:
+      stage: prepare
+      version-command: nix run nixpkgs#fq -- -r '.package.version' Cargo.toml
+
+  package:
+    name: Package
+    needs: prepare
+    if: ${{ needs.prepare.result == 'success' && needs.prepare.outputs.skip != 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.version }}
+          persist-credentials: false
+
+      - name: Package crate
+        run: cargo package --locked
+
+      - name: Upload crate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: gh release upload "$VERSION" "target/package/hallmark-${VERSION#v}.crate"
+
+  finalize:
+    permissions:
+      contents: write
+    needs: [prepare, package]
+    if: ${{ needs.prepare.outputs.skip != 'true' && needs.package.result == 'success' }}
+    uses: manic-systems/workflows/.github/workflows/rust-release.yml@d93951cf50722594dc1d64602eb9453dc7da2fb6 # v2.3.0
+    with:
+      stage: finalize
+      version: ${{ needs.prepare.outputs.version }}
+
+  publish:
+    permissions:
+      contents: read
+      id-token: write
+    needs: [prepare, finalize]
+    if: ${{ needs.prepare.outputs.skip != 'true' && needs.finalize.result == 'success' }}
+    uses: manic-systems/workflows/.github/workflows/rust-release.yml@d93951cf50722594dc1d64602eb9453dc7da2fb6 # v2.3.0
+    with:
+      stage: publish
+      version: ${{ needs.prepare.outputs.version }}
+      install-nix: false
+      publish-command: cargo publish --locked
