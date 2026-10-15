@@ -29,13 +29,13 @@ mod tests {
 
   #[test]
   fn known_vector() {
-    let ni = NarInfo::parse_str(
-      "StorePath: /nix/store/00bgd045z0d4icpbc2yyz4gx48ak44la-test\nURL: nar/x.nar\nNarHash: \
-       sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\nNarSize: \
-       100\nReferences: 7rjj0i6b2cvz01iw7hd1xk5f0r48rd8w-foo \
-       00bgd045z0d4icpbc2yyz4gx48ak44la-bar\n",
-    )
-    .unwrap();
+    let ni = "StorePath: /nix/store/00bgd045z0d4icpbc2yyz4gx48ak44la-test\nURL: \
+              nar/x.nar\nNarHash: \
+              sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\nNarSize: \
+              100\nReferences: 7rjj0i6b2cvz01iw7hd1xk5f0r48rd8w-foo \
+              00bgd045z0d4icpbc2yyz4gx48ak44la-bar\n"
+      .parse::<NarInfo>()
+      .unwrap();
     assert_eq!(
       fingerprint(&ni),
       "1;/nix/store/00bgd045z0d4icpbc2yyz4gx48ak44la-test;sha256:\

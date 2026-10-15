@@ -86,9 +86,9 @@ prop_compose! {
 proptest! {
   #[test]
   fn narinfo_parse_render_roundtrips(info in arb_narinfo()) {
-    let rendered = info.render();
-    let parsed = NarInfo::parse_str(&rendered).unwrap();
+    let rendered = info.to_string();
+    let parsed = rendered.parse::<NarInfo>().unwrap();
     prop_assert_eq!(&parsed, &info);
-    prop_assert_eq!(parsed.render(), rendered);
+    prop_assert_eq!(parsed.to_string(), rendered);
   }
 }

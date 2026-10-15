@@ -30,7 +30,7 @@ const FULL: &str =
 
 #[test]
 fn full_narinfo_roundtrips_canonically() {
-  let ni = NarInfo::parse_str(FULL).unwrap();
+  let ni = FULL.parse::<NarInfo>().unwrap();
   assert_eq!(ni.references.len(), 2);
   assert_eq!(ni.sig.len(), 2);
   assert_eq!(ni.file_size, Some(4096));
@@ -40,7 +40,7 @@ fn full_narinfo_roundtrips_canonically() {
     ni.deriver.as_ref().unwrap().base_name(),
     "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx-net-tools-1.60.drv"
   );
-  assert_eq!(ni.render(), FULL);
+  assert_eq!(ni.to_string(), FULL);
 }
 
 #[test]
@@ -48,7 +48,7 @@ fn minimal_narinfo_omitting_optional_fields() {
   let text = "StorePath: /nix/store/00bgd045z0d4icpbc2yyz4gx48ak44la-x\nURL: \
               nar/x.nar\nCompression: none\nNarHash: \
               sha256:0mdqa9w1p6cmli6976v4wi0sw9r4p5prkj7lzfd1877wk11c9c73\nNarSize: 7\n";
-  let ni = NarInfo::parse_str(text).unwrap();
+  let ni = text.parse::<NarInfo>().unwrap();
   assert!(ni.file_hash.is_none());
   assert!(ni.file_size.is_none());
   assert!(ni.deriver.is_none());
@@ -62,7 +62,7 @@ fn narinfo_tolerates_unknown_keys_and_blank_lines() {
   let text = "StorePath: /nix/store/00bgd045z0d4icpbc2yyz4gx48ak44la-x\n\nURL: \
               nar/x.nar\nSomethingNew: ignore me\nCompression: zstd\nNarHash: \
               sha256:0mdqa9w1p6cmli6976v4wi0sw9r4p5prkj7lzfd1877wk11c9c73\nNarSize: 1\n";
-  let ni = NarInfo::parse_str(text).unwrap();
+  let ni = text.parse::<NarInfo>().unwrap();
   assert_eq!(ni.compression, Compression::Zstd);
   assert_eq!(ni.url, "nar/x.nar");
 }
@@ -75,7 +75,7 @@ fn compression_variants_parse() {
        {compression}\nNarHash: \
        sha256:0mdqa9w1p6cmli6976v4wi0sw9r4p5prkj7lzfd1877wk11c9c73\nNarSize: 1\n"
     );
-    let parsed = NarInfo::parse_str(&text).unwrap().compression;
+    let parsed = text.parse::<NarInfo>().unwrap().compression;
     assert_eq!(parsed.to_string(), compression);
     assert!(!matches!(parsed, Compression::Other(_)));
   }
@@ -91,7 +91,7 @@ fn text_path_known_vector() {
 }
 
 fn foo() -> Result<StorePath, ParseStorePathError> {
-  StorePath::parse("/nix/store/dxwkwjzdaq7ka55pkk252gh32bgpmql4-foo")
+  "/nix/store/dxwkwjzdaq7ka55pkk252gh32bgpmql4-foo".parse::<StorePath>()
 }
 
 fn recursive(
@@ -131,7 +131,7 @@ fn flat_path_is_valid() {
   let path = ContentAddressed::Flat { sha256: [0x11; 32] }
     .store_path("f")
     .unwrap();
-  StorePath::parse(path.as_str()).unwrap();
+  path.as_str().parse::<StorePath>().unwrap();
 }
 
 #[test]
@@ -144,7 +144,9 @@ fn self_reference_changes_recursive_path() {
 
 #[test]
 fn extra_references_change_recursive_path() {
-  let baz = StorePath::parse("/nix/store/s89y431zzhmdn3k8r96rvakryddkpv2v-baz").unwrap();
+  let baz = "/nix/store/s89y431zzhmdn3k8r96rvakryddkpv2v-baz"
+    .parse::<StorePath>()
+    .unwrap();
   assert_ne!(
     recursive([0x33; 32], &[foo().unwrap()], false).unwrap(),
     recursive([0x33; 32], &[foo().unwrap(), baz], false).unwrap()

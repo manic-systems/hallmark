@@ -288,8 +288,8 @@ impl fmt::Display for Signature {
 
 /// A parsed `.narinfo` document.
 ///
-/// [`NarInfo::render`] (and the [`std::fmt::Display`] impl) reproduce the
-/// canonical field order Nix emits.
+/// The [`std::fmt::Display`] impl reproduces the canonical field order Nix
+/// emits.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NarInfo {
   /// The store path this entry describes.
@@ -432,20 +432,13 @@ impl NarInfo {
       ca,
     })
   }
+}
 
-  /// Parse a narinfo from a string slice.
-  ///
-  /// # Errors
-  ///
-  /// See [`NarInfo::parse`].
-  pub fn parse_str(text: &str) -> Result<Self, NarInfoError> {
+impl FromStr for NarInfo {
+  type Err = NarInfoError;
+
+  fn from_str(text: &str) -> Result<Self, Self::Err> {
     Self::parse(text.as_bytes())
-  }
-
-  /// Render back to the canonical narinfo text, newline-terminated.
-  #[must_use]
-  pub fn render(&self) -> String {
-    self.to_string()
   }
 }
 
@@ -495,18 +488,18 @@ mod tests {
 
   #[test]
   fn roundtrip() {
-    let ni = NarInfo::parse_str(SAMPLE).unwrap();
+    let ni = SAMPLE.parse::<NarInfo>().unwrap();
     assert_eq!(ni.references.len(), 2);
     assert_eq!(ni.file_size, Some(42));
     assert_eq!(ni.nar_size, 123);
     assert_eq!(ni.compression, Compression::Xz);
-    assert_eq!(ni.render(), SAMPLE);
+    assert_eq!(ni.to_string(), SAMPLE);
   }
 
   #[test]
   fn missing_store_path_errors() {
     assert!(matches!(
-      NarInfo::parse_str("URL: nar/abc.nar.xz\nNarSize: 1\n"),
+      "URL: nar/abc.nar.xz\nNarSize: 1\n".parse::<NarInfo>(),
       Err(NarInfoError::MissingField(Field::StorePath))
     ));
   }
@@ -514,7 +507,7 @@ mod tests {
   #[test]
   fn malformed_line_errors() {
     assert!(matches!(
-      NarInfo::parse_str("StorePath: /nix/store/abc\nno-colon-here\n"),
+      "StorePath: /nix/store/abc\nno-colon-here\n".parse::<NarInfo>(),
       Err(NarInfoError::MalformedLine(_))
     ));
   }

@@ -1,6 +1,11 @@
 //! Ed25519 signing and verification of narinfo fingerprints, in Nix's
 //! `name:base64` key format.
 
+use std::{
+  fmt,
+  str::FromStr,
+};
+
 use thiserror::Error;
 
 use crate::{
@@ -54,7 +59,7 @@ pub enum KeyError {
   },
 }
 
-fn split_name(input: &str) -> Result<(&str, &str), KeyError> {
+fn parse_named<const N: usize>(input: &str) -> Result<(&str, [u8; N]), KeyError> {
   let (name, b64) = input.trim().split_once(':').ok_or_else(|| {
     KeyError::MissingSeparator {
       input: input.to_owned(),
@@ -65,7 +70,20 @@ fn split_name(input: &str) -> Result<(&str, &str), KeyError> {
       input: input.to_owned(),
     });
   }
-  Ok((name, b64))
+
+  let raw = base64::decode(b64).map_err(|source| {
+    KeyError::InvalidBase64 {
+      input: input.to_owned(),
+      source,
+    }
+  })?;
+  let bytes = raw.try_into().map_err(|wrong: Vec<u8>| {
+    KeyError::InvalidSize {
+      got:  wrong.len(),
+      want: N,
+    }
+  })?;
+  Ok((name, bytes))
 }
 
 /// A binary cache signing key, as written by
@@ -75,7 +93,9 @@ pub struct SecretKey {
   key:  ed25519_compact::SecretKey,
 }
 
-impl SecretKey {
+impl FromStr for SecretKey {
+  type Err = KeyError;
+
   /// Parse a signing key from Nix's `<name>:<base64 of 64 bytes>` form.
   ///
   /// # Errors
@@ -83,20 +103,8 @@ impl SecretKey {
   /// Returns [`KeyError`] if the name is missing or empty, the payload is
   /// not valid base64, decodes to the wrong length, or is not a valid
   /// Ed25519 signing key.
-  pub fn parse(input: &str) -> Result<Self, KeyError> {
-    let (name, b64) = split_name(input)?;
-    let raw = base64::decode(b64).map_err(|source| {
-      KeyError::InvalidBase64 {
-        input: input.to_owned(),
-        source,
-      }
-    })?;
-    let bytes: [u8; 64] = raw.try_into().map_err(|wrong: Vec<u8>| {
-      KeyError::InvalidSize {
-        got:  wrong.len(),
-        want: 64,
-      }
-    })?;
+  fn from_str(input: &str) -> Result<Self, Self::Err> {
+    let (name, bytes) = parse_named::<64>(input)?;
     let key = ed25519_compact::SecretKey::new(bytes);
     key
       .validate_public_key(&key.public_key())
@@ -111,7 +119,9 @@ impl SecretKey {
       key,
     })
   }
+}
 
+impl SecretKey {
   /// The key name, used as the signature prefix.
   #[must_use]
   pub fn name(&self) -> &str {
@@ -147,7 +157,9 @@ pub struct PublicKey {
   key:  ed25519_compact::PublicKey,
 }
 
-impl PublicKey {
+impl FromStr for PublicKey {
+  type Err = KeyError;
+
   /// Parse a public key from Nix's `<name>:<base64 of 32 bytes>` form.
   ///
   /// # Errors
@@ -155,20 +167,8 @@ impl PublicKey {
   /// Returns [`KeyError`] if the name is missing or empty, the payload is
   /// not valid base64, decodes to the wrong length, or is not a valid
   /// Ed25519 verifying key.
-  pub fn parse(input: &str) -> Result<Self, KeyError> {
-    let (name, b64) = split_name(input)?;
-    let raw = base64::decode(b64).map_err(|source| {
-      KeyError::InvalidBase64 {
-        input: input.to_owned(),
-        source,
-      }
-    })?;
-    let bytes: [u8; 32] = raw.try_into().map_err(|wrong: Vec<u8>| {
-      KeyError::InvalidSize {
-        got:  wrong.len(),
-        want: 32,
-      }
-    })?;
+  fn from_str(input: &str) -> Result<Self, Self::Err> {
+    let (name, bytes) = parse_named::<32>(input)?;
     let key = ed25519_compact::PublicKey::new(bytes);
     key.validate().map_err(|source| {
       KeyError::InvalidKey {
@@ -181,7 +181,9 @@ impl PublicKey {
       key,
     })
   }
+}
 
+impl PublicKey {
   /// The key name a signature must carry to be checked against this key.
   #[must_use]
   pub fn name(&self) -> &str {
@@ -200,11 +202,12 @@ impl PublicKey {
         self.key.verify(fingerprint, &signature).is_ok()
       })
   }
+}
 
-  /// Render as the `<name>:<base64>` form used in `trusted-public-keys`.
-  #[must_use]
-  pub fn to_nix_string(&self) -> String {
-    format!("{}:{}", self.name, base64::encode(self.key.as_ref()))
+/// Renders as the `<name>:<base64>` form used in `trusted-public-keys`.
+impl fmt::Display for PublicKey {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    write!(f, "{}:{}", self.name, base64::encode(self.key.as_ref()))
   }
 }
 
@@ -233,16 +236,17 @@ mod tests {
 
   fn keypair(seed: [u8; 32], name: &str) -> SecretKey {
     let keypair = ed25519_compact::KeyPair::from_seed(ed25519_compact::Seed::new(seed));
-    SecretKey::parse(&format!("{name}:{}", base64::encode(keypair.sk.as_ref()))).unwrap()
+    format!("{name}:{}", base64::encode(keypair.sk.as_ref()))
+      .parse()
+      .unwrap()
   }
 
   fn sample() -> NarInfo {
-    NarInfo::parse_str(
-      "StorePath: /nix/store/00bgd045z0d4icpbc2yyz4gx48ak44la-test\nURL: nar/x.nar\nNarHash: \
-       sha256:0mdqa9w1p6cmli6976v4wi0sw9r4p5prkj7lzfd1877wk11c9c73\nNarSize: 12\nReferences: \
-       00bgd045z0d4icpbc2yyz4gx48ak44la-test\n",
-    )
-    .unwrap()
+    "StorePath: /nix/store/00bgd045z0d4icpbc2yyz4gx48ak44la-test\nURL: nar/x.nar\nNarHash: \
+     sha256:0mdqa9w1p6cmli6976v4wi0sw9r4p5prkj7lzfd1877wk11c9c73\nNarSize: 12\nReferences: \
+     00bgd045z0d4icpbc2yyz4gx48ak44la-test\n"
+      .parse()
+      .unwrap()
   }
 
   #[test]
@@ -274,30 +278,30 @@ mod tests {
   #[test]
   fn public_key_tolerates_missing_padding() {
     let sk = keypair([3; 32], "cache");
-    let padded = sk.public_key().to_nix_string();
+    let padded = sk.public_key().to_string();
     let unpadded = padded.trim_end_matches('=').to_owned();
     assert!(unpadded.ends_with(|last: char| last != '='));
-    let from_padded = PublicKey::parse(&padded).unwrap();
-    let from_unpadded = PublicKey::parse(&unpadded).unwrap();
+    let from_padded = padded.parse::<PublicKey>().unwrap();
+    let from_unpadded = unpadded.parse::<PublicKey>().unwrap();
     assert_eq!(from_padded, from_unpadded);
   }
 
   #[test]
   fn key_error_paths() {
     assert!(matches!(
-      PublicKey::parse("no-separator"),
+      "no-separator".parse::<PublicKey>(),
       Err(KeyError::MissingSeparator { .. })
     ));
     assert!(matches!(
-      PublicKey::parse(":dGVzdA=="),
+      ":dGVzdA==".parse::<PublicKey>(),
       Err(KeyError::EmptyName { .. })
     ));
     assert!(matches!(
-      PublicKey::parse("test:!!!"),
+      "test:!!!".parse::<PublicKey>(),
       Err(KeyError::InvalidBase64 { .. })
     ));
     assert!(matches!(
-      PublicKey::parse("test:dGVzdA=="),
+      "test:dGVzdA==".parse::<PublicKey>(),
       Err(KeyError::InvalidSize { want: 32, .. })
     ));
   }

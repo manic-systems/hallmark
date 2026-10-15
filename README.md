@@ -40,9 +40,9 @@ Parse, verify and render a narinfo:
 use hallmark::{narinfo::NarInfo, sign::PublicKey};
 
 let text = std::fs::read_to_string("example.narinfo")?;
-let info = NarInfo::parse_str(&text)?;
+let info = text.parse::<NarInfo>()?;
 
-let key = PublicKey::parse("cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=")?;
+let key = "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=".parse::<PublicKey>()?;
 if info.verify(&[key]) {
   println!("signature ok");
 }
@@ -55,7 +55,7 @@ Sign a narinfo with a secret key:
 ```rust
 use hallmark::{narinfo::NarInfo, sign::SecretKey};
 
-let key = SecretKey::parse("cache-1:<base64 of 64-byte secret>");
+let key = "cache-1:<base64 of 64-byte secret>".parse::<SecretKey>();
 # let _ = key;
 ```
 

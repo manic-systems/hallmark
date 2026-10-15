@@ -183,6 +183,15 @@ impl fmt::Display for Hash {
   }
 }
 
+impl fmt::LowerHex for Hash {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    self
+      .digest()
+      .iter()
+      .try_for_each(|byte| write!(f, "{byte:02x}"))
+  }
+}
+
 const fn nibble(digit: u8) -> Option<u8> {
   match digit {
     b'0'..=b'9' => Some(digit - b'0'),

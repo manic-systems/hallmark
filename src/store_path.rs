@@ -97,20 +97,18 @@ pub fn validate_name(name: &str) -> Result<(), ParseStorePathError> {
 /// A validated absolute `/nix/store/<hash>-<name>` path.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct StorePath {
-  path: String,
+  path:   String,
+  digest: [u8; DIGEST_SIZE],
 }
 
 /// A borrowed, validated store path or its `<hash>-<name>` component.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct StorePathRef<'path> {
-  path: &'path str,
+  path:   &'path str,
+  digest: [u8; DIGEST_SIZE],
 }
 
-#[expect(
-  clippy::string_slice,
-  reason = "validated components are ASCII, so every index is a char boundary"
-)]
-fn validate_component(component: &str) -> Result<(), ParseStorePathError> {
+fn validate_component(component: &str) -> Result<[u8; DIGEST_SIZE], ParseStorePathError> {
   let bytes = component.as_bytes();
   if bytes.len() < ENCODED_DIGEST_SIZE + 2 {
     return Err(ParseStorePathError::Length);
@@ -118,8 +116,13 @@ fn validate_component(component: &str) -> Result<(), ParseStorePathError> {
   if bytes[ENCODED_DIGEST_SIZE] != b'-' {
     return Err(ParseStorePathError::MissingDash);
   }
-  nixbase32::decode(&bytes[..ENCODED_DIGEST_SIZE])?;
-  validate_name(&component[ENCODED_DIGEST_SIZE + 1..])
+  let decoded = nixbase32::decode(&bytes[..ENCODED_DIGEST_SIZE])?;
+  let Ok(digest) = <[u8; DIGEST_SIZE]>::try_from(decoded) else {
+    return Err(ParseStorePathError::Length);
+  };
+  let (_, name) = component.split_at(ENCODED_DIGEST_SIZE + 1);
+  validate_name(name)?;
+  Ok(digest)
 }
 
 impl<'path> StorePathRef<'path> {
@@ -129,9 +132,12 @@ impl<'path> StorePathRef<'path> {
   ///
   /// Returns [`ParseStorePathError`] if the hash is malformed, the `-`
   /// separator is missing, or the name is invalid.
-  pub fn from_bytes(component: &'path str) -> Result<Self, ParseStorePathError> {
-    validate_component(component)?;
-    Ok(Self { path: component })
+  pub fn from_component(component: &'path str) -> Result<Self, ParseStorePathError> {
+    let digest = validate_component(component)?;
+    Ok(Self {
+      path: component,
+      digest,
+    })
   }
 
   /// Validate a full `/nix/store/<hash>-<name>` path.
@@ -140,13 +146,13 @@ impl<'path> StorePathRef<'path> {
   ///
   /// Returns [`ParseStorePathError::MissingStoreDir`] if the
   /// `/nix/store/` prefix is absent; otherwise returns the component errors
-  /// from [`StorePathRef::from_bytes`].
+  /// from [`StorePathRef::from_component`].
   pub fn from_absolute_path(path: &'path str) -> Result<Self, ParseStorePathError> {
     let component = path
       .strip_prefix(STORE_DIR_WITH_SLASH)
       .ok_or(ParseStorePathError::MissingStoreDir)?;
-    validate_component(component)?;
-    Ok(Self { path })
+    let digest = validate_component(component)?;
+    Ok(Self { path, digest })
   }
 
   /// The nixbase32 hash prefix, without the name or store directory.
@@ -154,44 +160,28 @@ impl<'path> StorePathRef<'path> {
     clippy::same_name_method,
     reason = "`hash` names the store-path hash part, as in Nix"
   )]
-  #[expect(
-    clippy::string_slice,
-    reason = "validated components are ASCII, so every index is a char boundary"
-  )]
   #[must_use]
   pub fn hash(&self) -> &'path str {
-    let start = self.path.len() - self.base_name().len();
-    &self.path[start..start + ENCODED_DIGEST_SIZE]
+    let (hash, _) = self.base_name().split_at(ENCODED_DIGEST_SIZE);
+    hash
   }
 
   /// The name that follows the `-`.
-  #[expect(
-    clippy::string_slice,
-    reason = "validated components are ASCII, so every index is a char boundary"
-  )]
   #[must_use]
   pub fn name(&self) -> &'path str {
-    let component = self.base_name();
-    &component[ENCODED_DIGEST_SIZE + 1..]
+    let (_, name) = self.base_name().split_at(ENCODED_DIGEST_SIZE + 1);
+    name
   }
 
   /// The 20-byte digest the hash encodes.
-  #[expect(
-    clippy::missing_panics_doc,
-    clippy::expect_used,
-    reason = "the hash was decoded during validation, so decoding it again is infallible"
-  )]
   #[must_use]
-  pub fn digest(&self) -> [u8; DIGEST_SIZE] {
-    let mut out = [0_u8; DIGEST_SIZE];
-    let decoded = nixbase32::decode(self.hash().as_bytes()).expect("validated on construction");
-    out.copy_from_slice(&decoded);
-    out
+  pub const fn digest(&self) -> [u8; DIGEST_SIZE] {
+    self.digest
   }
 
   /// The validated string this handle wraps: a full store path from
   /// [`StorePathRef::from_absolute_path`], or a `<hash>-<name>` component
-  /// from [`StorePathRef::from_bytes`].
+  /// from [`StorePathRef::from_component`].
   #[must_use]
   pub const fn as_str(&self) -> &'path str {
     self.path
@@ -205,49 +195,44 @@ impl<'path> StorePathRef<'path> {
       .rsplit_once('/')
       .map_or(self.path, |(_, component)| component)
   }
+}
 
-  /// Copy into an owning [`StorePath`].
-  #[must_use]
-  pub fn to_owned(&self) -> StorePath {
-    StorePath {
-      path: self.path.to_owned(),
+impl From<StorePathRef<'_>> for StorePath {
+  fn from(path_ref: StorePathRef<'_>) -> Self {
+    Self {
+      path:   path_ref.path.to_owned(),
+      digest: path_ref.digest,
     }
   }
 }
 
+impl FromStr for StorePath {
+  type Err = ParseStorePathError;
+
+  fn from_str(path: &str) -> Result<Self, Self::Err> {
+    StorePathRef::from_absolute_path(path).map(Self::from)
+  }
+}
+
 impl StorePath {
-  /// Validate a full `/nix/store/<hash>-<name>` path.
-  ///
-  /// # Errors
-  ///
-  /// See [`StorePathRef::from_absolute_path`].
-  pub fn parse(path: &str) -> Result<Self, ParseStorePathError> {
-    StorePathRef::from_absolute_path(path).map(|path_ref| path_ref.to_owned())
-  }
-
-  /// Validate that `path` is a well-formed `/nix/store/<hash>-<name>` path.
-  ///
-  /// # Errors
-  ///
-  /// See [`StorePathRef::from_absolute_path`].
-  pub fn validate(path: &str) -> Result<(), ParseStorePathError> {
-    StorePathRef::from_absolute_path(path).map(|_| ())
-  }
-
   fn from_digest_and_name(
     digest: &[u8; DIGEST_SIZE],
     name: &str,
   ) -> Result<Self, ParseStorePathError> {
     validate_name(name)?;
     Ok(Self {
-      path: format!("{STORE_DIR_WITH_SLASH}{}-{name}", nixbase32::encode(digest)),
+      path:   format!("{STORE_DIR_WITH_SLASH}{}-{name}", nixbase32::encode(digest)),
+      digest: *digest,
     })
   }
 
   /// A borrowing view of this path.
   #[must_use]
-  pub fn as_ref(&self) -> StorePathRef<'_> {
-    StorePathRef { path: &self.path }
+  pub fn as_path_ref(&self) -> StorePathRef<'_> {
+    StorePathRef {
+      path:   &self.path,
+      digest: self.digest,
+    }
   }
 
   /// The nixbase32 hash prefix, without the name or store directory.
@@ -257,19 +242,19 @@ impl StorePath {
   )]
   #[must_use]
   pub fn hash(&self) -> &str {
-    self.as_ref().hash()
+    self.as_path_ref().hash()
   }
 
   /// The name that follows the `-`.
   #[must_use]
   pub fn name(&self) -> &str {
-    self.as_ref().name()
+    self.as_path_ref().name()
   }
 
   /// The 20-byte digest the hash encodes.
   #[must_use]
-  pub fn digest(&self) -> [u8; DIGEST_SIZE] {
-    self.as_ref().digest()
+  pub const fn digest(&self) -> [u8; DIGEST_SIZE] {
+    self.digest
   }
 
   /// The full `/nix/store/<hash>-<name>` string.
@@ -281,7 +266,13 @@ impl StorePath {
   /// The `<hash>-<name>` part, without the store directory.
   #[must_use]
   pub fn base_name(&self) -> &str {
-    self.as_ref().base_name()
+    self.as_path_ref().base_name()
+  }
+}
+
+impl AsRef<str> for StorePath {
+  fn as_ref(&self) -> &str {
+    &self.path
   }
 }
 
@@ -338,15 +329,16 @@ impl StoreDir {
   ///
   /// Returns [`ParseStorePathError::MissingStoreDir`] if `path` is not
   /// directly inside this directory; otherwise returns the component errors
-  /// from [`StorePathRef::from_bytes`].
+  /// from [`StorePathRef::from_component`].
   pub fn parse(&self, path: &str) -> Result<StorePath, ParseStorePathError> {
     let component = path
       .strip_prefix(self.path.as_str())
       .and_then(|rest| rest.strip_prefix('/'))
       .ok_or(ParseStorePathError::MissingStoreDir)?;
-    validate_component(component)?;
+    let digest = validate_component(component)?;
     Ok(StorePath {
       path: path.to_owned(),
+      digest,
     })
   }
 
@@ -355,12 +347,21 @@ impl StoreDir {
   ///
   /// # Errors
   ///
-  /// Returns the component errors from [`StorePathRef::from_bytes`].
+  /// Returns the component errors from [`StorePathRef::from_component`].
   pub fn join(&self, base_name: &str) -> Result<StorePath, ParseStorePathError> {
-    validate_component(base_name)?;
+    let digest = validate_component(base_name)?;
     Ok(StorePath {
       path: format!("{}/{base_name}", self.path),
+      digest,
     })
+  }
+}
+
+impl FromStr for StoreDir {
+  type Err = StoreDirError;
+
+  fn from_str(path: &str) -> Result<Self, Self::Err> {
+    Self::new(path)
   }
 }
 
@@ -487,7 +488,8 @@ impl ContentAddressed<'_> {
         from_fingerprint_parts(&format_references("text", references, false), &sha256, name)
       },
       Self::Flat { sha256 } => {
-        let inner = Sha256::hash(format!("fixed:out:sha256:{}:", hex_lower(&sha256)).as_bytes());
+        let inner =
+          Sha256::hash(format!("fixed:out:sha256:{:x}:", Hash::Sha256(sha256)).as_bytes());
         from_fingerprint_parts("output:out", &inner, name)
       },
       Self::Recursive {
@@ -503,16 +505,6 @@ impl ContentAddressed<'_> {
       },
     }
   }
-}
-
-fn hex_lower(bytes: &[u8]) -> String {
-  const HEX: &[u8; 16] = b"0123456789abcdef";
-  let mut out = String::with_capacity(bytes.len() * 2);
-  for &byte in bytes {
-    out.push(char::from(HEX[(byte >> 4_u8) as usize]));
-    out.push(char::from(HEX[(byte & 0x0F) as usize]));
-  }
-  out
 }
 
 fn compress_hash<const N: usize>(input: &[u8]) -> [u8; N] {
@@ -540,7 +532,10 @@ fn from_fingerprint_parts(
   inner_digest: &[u8; 32],
   name: &str,
 ) -> Result<StorePath, BuildError> {
-  let fingerprint = format!("{ty}:sha256:{}:{STORE_DIR}:{name}", hex_lower(inner_digest));
+  let fingerprint = format!(
+    "{ty}:sha256:{:x}:{STORE_DIR}:{name}",
+    Hash::Sha256(*inner_digest)
+  );
   let compressed = compress_hash::<DIGEST_SIZE>(&Sha256::hash(fingerprint.as_bytes()));
   StorePath::from_digest_and_name(&compressed, name).map_err(|source| {
     BuildError {
@@ -575,10 +570,9 @@ mod tests {
 
   #[test]
   fn parse_valid() {
-    let store_path = StorePath::parse(
-      "/nix/store/00bgd045z0d4icpbc2yyz4gx48ak44la-net-tools-1.60_p20170221182432",
-    )
-    .unwrap();
+    let store_path = "/nix/store/00bgd045z0d4icpbc2yyz4gx48ak44la-net-tools-1.60_p20170221182432"
+      .parse::<StorePath>()
+      .unwrap();
     assert_eq!(store_path.hash(), "00bgd045z0d4icpbc2yyz4gx48ak44la");
     assert_eq!(store_path.name(), "net-tools-1.60_p20170221182432");
     assert_eq!(
@@ -590,19 +584,23 @@ mod tests {
   #[test]
   fn parse_invalid_edges() {
     assert_eq!(
-      StorePath::parse("foobar-123"),
+      "foobar-123".parse::<StorePath>(),
       Err(ParseStorePathError::MissingStoreDir)
     );
     assert_eq!(
-      StorePath::parse("/nix/store/00bgd045z0d4icpbc2yy-"),
+      "/nix/store/00bgd045z0d4icpbc2yy-".parse::<StorePath>(),
       Err(ParseStorePathError::Length)
     );
-    StorePath::parse("/nix/store/00bgd045z0d4icpbc2yyz4gx48aku4la-net-tools").unwrap_err();
+    "/nix/store/00bgd045z0d4icpbc2yyz4gx48aku4la-net-tools"
+      .parse::<StorePath>()
+      .unwrap_err();
     assert_eq!(
-      StorePathRef::from_bytes("00bgd045z0d4icpbc2yyz4gx48ak44lanet-tools"),
+      StorePathRef::from_component("00bgd045z0d4icpbc2yyz4gx48ak44lanet-tools"),
       Err(ParseStorePathError::MissingDash)
     );
-    StorePath::parse("/nix/store/00bgd045z0d4icpbc2yyz4gx48ak44la-net/tools").unwrap_err();
+    "/nix/store/00bgd045z0d4icpbc2yyz4gx48ak44la-net/tools"
+      .parse::<StorePath>()
+      .unwrap_err();
   }
 
   #[test]
@@ -639,7 +637,7 @@ mod tests {
   fn default_store_dir_matches_parse() {
     let path = "/nix/store/00bgd045z0d4icpbc2yyz4gx48ak44la-net-tools";
     assert_eq!(StoreDir::default().as_str(), STORE_DIR);
-    assert_eq!(StoreDir::default().parse(path), StorePath::parse(path));
+    assert_eq!(StoreDir::default().parse(path), path.parse::<StorePath>());
   }
 
   #[test]
@@ -683,7 +681,9 @@ mod tests {
         .unwrap()
         .try_into()
         .unwrap();
-    let references = [StorePath::parse("/nix/store/dxwkwjzdaq7ka55pkk252gh32bgpmql4-foo").unwrap()];
+    let references = ["/nix/store/dxwkwjzdaq7ka55pkk252gh32bgpmql4-foo"
+      .parse::<StorePath>()
+      .unwrap()];
     let store_path = ContentAddressed::Recursive {
       sha256:     digest,
       references: &references,
