@@ -27,6 +27,7 @@ use std::{
     Read,
     Write,
   },
+  path::PathBuf,
 };
 #[cfg(unix)]
 use std::{
@@ -38,10 +39,71 @@ use std::{
   path::Path,
 };
 
+use thiserror::Error;
+
 const MAX_TOKEN: usize = 4096;
 
-fn invalid(msg: impl Into<String>) -> io::Error {
-  io::Error::new(io::ErrorKind::InvalidData, msg.into())
+/// A NAR could not be read or written because of its structure.
+///
+/// Public functions in this module return [`io::Error`], so a caller that
+/// wants to branch on the cause downcasts [`io::Error::get_ref`] to this type.
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum NarError {
+  /// A token longer than the format allows.
+  #[error("malformed NAR: oversized token")]
+  OversizedToken,
+  /// Padding bytes that are not all zero.
+  #[error("malformed NAR: non-zero padding")]
+  NonZeroPadding,
+  /// A token other than the one the grammar requires at this point.
+  #[error("malformed NAR: expected {expected:?}, got {:?}", String::from_utf8_lossy(.got))]
+  UnexpectedToken {
+    /// What the grammar allows here.
+    expected: &'static str,
+    /// The token that was found.
+    got:      Vec<u8>,
+  },
+  /// A node whose `type` is not `regular`, `symlink`, or `directory`.
+  #[error("malformed NAR: unknown node type {:?}", String::from_utf8_lossy(.0))]
+  UnknownNodeType(Vec<u8>),
+  /// Directories nested deeper than the reader accepts.
+  #[error("malformed NAR: nesting too deep")]
+  NestingTooDeep,
+  /// An archive that produced no root node.
+  #[error("malformed NAR: no root node")]
+  NoRootNode,
+  /// A directory entry name that is empty or contains `/` or a NUL byte.
+  #[error("invalid NAR entry name")]
+  InvalidEntryName,
+  /// Directory entries that are not strictly ascending by name.
+  #[error("NAR directory entries must be sorted and unique")]
+  UnsortedEntries,
+  /// A path that is neither a regular file, a directory, nor a symlink.
+  #[error("{}: not a regular file, directory or symlink", .0.display())]
+  UnsupportedFileType(PathBuf),
+}
+
+impl NarError {
+  const fn kind(&self) -> io::ErrorKind {
+    match *self {
+      Self::OversizedToken
+      | Self::NonZeroPadding
+      | Self::UnexpectedToken { .. }
+      | Self::UnknownNodeType(_)
+      | Self::NestingTooDeep
+      | Self::NoRootNode => io::ErrorKind::InvalidData,
+      Self::InvalidEntryName | Self::UnsortedEntries | Self::UnsupportedFileType(_) => {
+        io::ErrorKind::InvalidInput
+      },
+    }
+  }
+}
+
+impl From<NarError> for io::Error {
+  fn from(err: NarError) -> Self {
+    Self::new(err.kind(), err)
+  }
 }
 
 fn pad_len(len: u64) -> usize {
@@ -88,64 +150,109 @@ where
   w.write_all(&file_nar_trailer(len))
 }
 
-fn read_u64<R>(reader: &mut R) -> io::Result<u64>
-where
-  R: Read + ?Sized,
-{
-  let mut buf = [0_u8; 8];
-  reader.read_exact(&mut buf)?;
-  Ok(u64::from_le_bytes(buf))
-}
+trait NarRead: Read {
+  fn read_u64(&mut self) -> io::Result<u64> {
+    let mut buf = [0_u8; 8];
+    self.read_exact(&mut buf)?;
+    Ok(u64::from_le_bytes(buf))
+  }
 
-fn write_u64<W>(writer: &mut W, n: u64) -> io::Result<()>
-where
-  W: Write + ?Sized,
-{
-  writer.write_all(&n.to_le_bytes())
-}
-
-fn token<R, W>(reader: &mut R, writer: &mut W) -> io::Result<Vec<u8>>
-where
-  R: Read + ?Sized,
-  W: Write + ?Sized,
-{
-  let token = read_padded_token(reader)?;
-  write_padded_token(writer, &token)?;
-  Ok(token)
-}
-
-fn expect<R, W>(reader: &mut R, writer: &mut W, want: &str) -> io::Result<()>
-where
-  R: Read + ?Sized,
-  W: Write + ?Sized,
-{
-  let tok = token(reader, writer)?;
-  if tok == want.as_bytes() {
+  fn read_padding(&mut self, len: u64) -> io::Result<()> {
+    let pad = pad_len(len);
+    let mut padding = [0_u8; 8];
+    self.read_exact(&mut padding[..pad])?;
+    if padding[..pad].iter().any(|&byte| byte != 0) {
+      return Err(NarError::NonZeroPadding.into());
+    }
     Ok(())
-  } else {
-    Err(invalid(format!(
-      "malformed NAR: expected {want:?}, got {:?}",
-      String::from_utf8_lossy(&tok)
-    )))
+  }
+
+  fn read_padded_token(&mut self) -> io::Result<Vec<u8>> {
+    let len = self.read_u64()?;
+    let size = usize::try_from(len)
+      .ok()
+      .filter(|&size| size <= MAX_TOKEN)
+      .ok_or(NarError::OversizedToken)?;
+
+    let mut token = vec![0_u8; size];
+    self.read_exact(&mut token)?;
+    self.read_padding(len)?;
+    Ok(token)
+  }
+
+  fn expect_token(&mut self, want: &'static str) -> io::Result<()> {
+    let got = self.read_padded_token()?;
+    if got == want.as_bytes() {
+      return Ok(());
+    }
+    Err(
+      NarError::UnexpectedToken {
+        expected: want,
+        got,
+      }
+      .into(),
+    )
+  }
+
+  fn copy_token<W>(&mut self, writer: &mut W) -> io::Result<Vec<u8>>
+  where
+    W: Write + ?Sized,
+  {
+    let token = self.read_padded_token()?;
+    writer.write_padded_token(&token)?;
+    Ok(token)
+  }
+
+  fn copy_expect<W>(&mut self, writer: &mut W, want: &'static str) -> io::Result<()>
+  where
+    W: Write + ?Sized,
+  {
+    let got = self.copy_token(writer)?;
+    if got == want.as_bytes() {
+      return Ok(());
+    }
+    Err(
+      NarError::UnexpectedToken {
+        expected: want,
+        got,
+      }
+      .into(),
+    )
+  }
+
+  fn copy_contents<W>(&mut self, writer: &mut W) -> io::Result<()>
+  where
+    W: Write + ?Sized,
+  {
+    let len = self.read_u64()?;
+    writer.write_u64(len)?;
+
+    let copied = io::copy(&mut (&mut *self).take(len), writer)?;
+    if copied != len {
+      return Err(io::ErrorKind::UnexpectedEof.into());
+    }
+
+    self.read_padding(len)?;
+    writer.write_all(&[0_u8; 8][..pad_len(len)])
   }
 }
 
-fn contents<R, W>(reader: &mut R, writer: &mut W) -> io::Result<()>
-where
-  R: Read + ?Sized,
-  W: Write + ?Sized,
-{
-  let len = read_u64(reader)?;
-  write_u64(writer, len)?;
+impl<R: Read + ?Sized> NarRead for R {}
 
-  let copied = io::copy(&mut reader.take(len), writer)?;
-  if copied != len {
-    return Err(io::ErrorKind::UnexpectedEof.into());
+trait NarWrite: Write {
+  fn write_u64(&mut self, n: u64) -> io::Result<()> {
+    self.write_all(&n.to_le_bytes())
   }
 
-  read_padding(reader, len)?;
-  writer.write_all(&[0_u8; 8][..pad_len(len)])
+  fn write_padded_token(&mut self, token: &[u8]) -> io::Result<()> {
+    let len = token.len() as u64;
+    self.write_u64(len)?;
+    self.write_all(token)?;
+    self.write_all(&[0_u8; 8][..pad_len(len)])
+  }
 }
+
+impl<W: Write + ?Sized> NarWrite for W {}
 
 /// Copy exactly one NAR from `r` to `w`, parsing it to find where it ends.
 ///
@@ -163,68 +270,75 @@ where
     DirEntry,
   }
 
-  expect(reader, writer, "nix-archive-1")?;
+  reader.copy_expect(writer, "nix-archive-1")?;
   let mut depth = 0_usize;
   let mut next = Next::Node;
   loop {
     next = match next {
       Next::Node => {
-        expect(reader, writer, "(")?;
-        expect(reader, writer, "type")?;
-        match token(reader, writer)?.as_slice() {
+        reader.copy_expect(writer, "(")?;
+        reader.copy_expect(writer, "type")?;
+        match reader.copy_token(writer)?.as_slice() {
           b"regular" => {
-            let mut tok = token(reader, writer)?;
+            let mut tok = reader.copy_token(writer)?;
             if tok == b"executable" {
-              expect(reader, writer, "")?;
-              tok = token(reader, writer)?;
+              reader.copy_expect(writer, "")?;
+              tok = reader.copy_token(writer)?;
             }
             if tok != b"contents" {
-              return Err(invalid("malformed NAR: expected \"contents\""));
+              return Err(
+                NarError::UnexpectedToken {
+                  expected: "contents",
+                  got:      tok,
+                }
+                .into(),
+              );
             }
-            contents(reader, writer)?;
-            expect(reader, writer, ")")?;
+            reader.copy_contents(writer)?;
+            reader.copy_expect(writer, ")")?;
             Next::NodeDone
           },
           b"symlink" => {
-            expect(reader, writer, "target")?;
-            token(reader, writer)?;
-            expect(reader, writer, ")")?;
+            reader.copy_expect(writer, "target")?;
+            reader.copy_token(writer)?;
+            reader.copy_expect(writer, ")")?;
             Next::NodeDone
           },
           b"directory" => {
             depth += 1;
             Next::DirEntry
           },
-          other => {
-            return Err(invalid(format!(
-              "malformed NAR: unknown node type {:?}",
-              String::from_utf8_lossy(other)
-            )));
-          },
+          other => return Err(NarError::UnknownNodeType(other.to_vec()).into()),
         }
       },
       Next::NodeDone => {
         if depth == 0 {
           return Ok(());
         }
-        expect(reader, writer, ")")?;
+        reader.copy_expect(writer, ")")?;
         Next::DirEntry
       },
       Next::DirEntry => {
-        match token(reader, writer)?.as_slice() {
+        match reader.copy_token(writer)?.as_slice() {
           b"entry" => {
-            expect(reader, writer, "(")?;
-            expect(reader, writer, "name")?;
-            token(reader, writer)?;
-            expect(reader, writer, "node")?;
+            reader.copy_expect(writer, "(")?;
+            reader.copy_expect(writer, "name")?;
+            reader.copy_token(writer)?;
+            reader.copy_expect(writer, "node")?;
             Next::Node
           },
           b")" => {
             depth -= 1;
             Next::NodeDone
           },
-          _ => {
-            return Err(invalid("malformed NAR: expected \"entry\" or \")\""));
+          other => {
+            return Err(
+              NarError::UnexpectedToken {
+                expected: "entry or )",
+                got:      other.to_vec(),
+              }
+              .into(),
+            );
           },
         }
       },
@@ -235,16 +349,6 @@ where
 const MAGIC: &str = "nix-archive-1";
 
 const MAX_DEPTH: usize = 10_000;
-
-fn write_padded_token<W>(w: &mut W, token: &[u8]) -> io::Result<()>
-where
-  W: Write + ?Sized,
-{
-  let len = token.len() as u64;
-  write_u64(w, len)?;
-  w.write_all(token)?;
-  w.write_all(&[0_u8; 8][..pad_len(len)])
-}
 
 /// Begin a NAR on `w`, returning the handle for its single root node.
 ///
@@ -259,7 +363,7 @@ pub fn open<W>(w: &mut W) -> io::Result<Node<'_, W>>
 where
   W: Write + ?Sized,
 {
-  write_padded_token(w, MAGIC.as_bytes())?;
+  w.write_padded_token(MAGIC.as_bytes())?;
   Ok(Node { w })
 }
 
@@ -275,12 +379,12 @@ impl<'writer, W: Write + ?Sized> Node<'writer, W> {
   ///
   /// Propagates write errors from the underlying writer.
   pub fn symlink(self, target: &[u8]) -> io::Result<()> {
-    write_padded_token(self.w, b"(")?;
-    write_padded_token(self.w, b"type")?;
-    write_padded_token(self.w, b"symlink")?;
-    write_padded_token(self.w, b"target")?;
-    write_padded_token(self.w, target)?;
-    write_padded_token(self.w, b")")
+    self.w.write_padded_token(b"(")?;
+    self.w.write_padded_token(b"type")?;
+    self.w.write_padded_token(b"symlink")?;
+    self.w.write_padded_token(b"target")?;
+    self.w.write_padded_token(target)?;
+    self.w.write_padded_token(b")")
   }
 
   /// Write this node as a regular file of `size` bytes streamed from `body`.
@@ -293,21 +397,21 @@ impl<'writer, W: Write + ?Sized> Node<'writer, W> {
   /// Propagates I/O errors, and fails with [`io::ErrorKind::UnexpectedEof`]
   /// if `body` yields fewer than `size` bytes.
   pub fn file(self, executable: bool, size: u64, body: &mut dyn Read) -> io::Result<()> {
-    write_padded_token(self.w, b"(")?;
-    write_padded_token(self.w, b"type")?;
-    write_padded_token(self.w, b"regular")?;
+    self.w.write_padded_token(b"(")?;
+    self.w.write_padded_token(b"type")?;
+    self.w.write_padded_token(b"regular")?;
     if executable {
-      write_padded_token(self.w, b"executable")?;
-      write_padded_token(self.w, b"")?;
+      self.w.write_padded_token(b"executable")?;
+      self.w.write_padded_token(b"")?;
     }
-    write_padded_token(self.w, b"contents")?;
-    write_u64(self.w, size)?;
+    self.w.write_padded_token(b"contents")?;
+    self.w.write_u64(size)?;
     let copied = io::copy(&mut body.take(size), self.w)?;
     if copied != size {
       return Err(io::ErrorKind::UnexpectedEof.into());
     }
     self.w.write_all(&[0_u8; 8][..pad_len(size)])?;
-    write_padded_token(self.w, b")")
+    self.w.write_padded_token(b")")
   }
 
   /// Begin a directory node; add entries, then call [`Directory::close`].
@@ -316,9 +420,9 @@ impl<'writer, W: Write + ?Sized> Node<'writer, W> {
   ///
   /// Propagates write errors from the underlying writer.
   pub fn directory(self) -> io::Result<Directory<'writer, W>> {
-    write_padded_token(self.w, b"(")?;
-    write_padded_token(self.w, b"type")?;
-    write_padded_token(self.w, b"directory")?;
+    self.w.write_padded_token(b"(")?;
+    self.w.write_padded_token(b"type")?;
+    self.w.write_padded_token(b"directory")?;
     Ok(Directory {
       w:          self.w,
       last:       None,
@@ -346,25 +450,19 @@ impl<W: Write + ?Sized> Directory<'_, W> {
   /// `/` or a NUL byte, or does not sort strictly after the previous entry.
   pub fn entry(&mut self, name: &[u8]) -> io::Result<Node<'_, W>> {
     if name.is_empty() || name.contains(&b'/') || name.contains(&0) {
-      return Err(io::Error::new(
-        io::ErrorKind::InvalidInput,
-        "invalid NAR entry name",
-      ));
+      return Err(NarError::InvalidEntryName.into());
     }
     if self.last.as_deref().is_some_and(|last| name <= last) {
-      return Err(io::Error::new(
-        io::ErrorKind::InvalidInput,
-        "NAR directory entries must be sorted and unique",
-      ));
+      return Err(NarError::UnsortedEntries.into());
     }
     if self.open_entry {
-      write_padded_token(self.w, b")")?;
+      self.w.write_padded_token(b")")?;
     }
-    write_padded_token(self.w, b"entry")?;
-    write_padded_token(self.w, b"(")?;
-    write_padded_token(self.w, b"name")?;
-    write_padded_token(self.w, name)?;
-    write_padded_token(self.w, b"node")?;
+    self.w.write_padded_token(b"entry")?;
+    self.w.write_padded_token(b"(")?;
+    self.w.write_padded_token(b"name")?;
+    self.w.write_padded_token(name)?;
+    self.w.write_padded_token(b"node")?;
     self.last = Some(name.to_vec());
     self.open_entry = true;
     Ok(Node { w: &mut *self.w })
@@ -377,9 +475,9 @@ impl<W: Write + ?Sized> Directory<'_, W> {
   /// Propagates write errors from the underlying writer.
   pub fn close(self) -> io::Result<()> {
     if self.open_entry {
-      write_padded_token(self.w, b")")?;
+      self.w.write_padded_token(b")")?;
     }
-    write_padded_token(self.w, b")")
+    self.w.write_padded_token(b")")
   }
 }
 
@@ -497,13 +595,7 @@ where
   }
 
   if !file_type.is_file() {
-    return Err(io::Error::new(
-      io::ErrorKind::InvalidInput,
-      format!(
-        "{}: not a regular file, directory or symlink",
-        path.display()
-      ),
-    ));
+    return Err(NarError::UnsupportedFileType(path.to_path_buf()).into());
   }
 
   let mut file = File::open(path).map_err(with_path)?;
@@ -566,50 +658,6 @@ pub trait Visitor {
   }
 }
 
-fn read_padded_token<R>(reader: &mut R) -> io::Result<Vec<u8>>
-where
-  R: Read + ?Sized,
-{
-  let len = read_u64(reader)?;
-  let size = usize::try_from(len)
-    .ok()
-    .filter(|&size| size <= MAX_TOKEN)
-    .ok_or_else(|| invalid("malformed NAR: oversized token"))?;
-
-  let mut token = vec![0_u8; size];
-  reader.read_exact(&mut token)?;
-  read_padding(reader, len)?;
-  Ok(token)
-}
-
-fn expect_token<R>(reader: &mut R, want: &str) -> io::Result<()>
-where
-  R: Read + ?Sized,
-{
-  let tok = read_padded_token(reader)?;
-  if tok == want.as_bytes() {
-    Ok(())
-  } else {
-    Err(invalid(format!(
-      "malformed NAR: expected {want:?}, got {:?}",
-      String::from_utf8_lossy(&tok)
-    )))
-  }
-}
-
-fn read_padding<R>(reader: &mut R, len: u64) -> io::Result<()>
-where
-  R: Read + ?Sized,
-{
-  let pad = pad_len(len);
-  let mut padding = [0_u8; 8];
-  reader.read_exact(&mut padding[..pad])?;
-  if padding[..pad].iter().any(|&byte| byte != 0) {
-    return Err(invalid("malformed NAR: non-zero padding"));
-  }
-  Ok(())
-}
-
 /// Walk a NAR from `r`, reporting each node to `visitor`.
 ///
 /// File bodies are streamed, so arbitrarily large archives can be processed
@@ -624,7 +672,7 @@ where
   R: Read + ?Sized,
   V: Visitor,
 {
-  expect_token(reader, MAGIC)?;
+  reader.expect_token(MAGIC)?;
   read_node(reader, visitor, 0)
 }
 
@@ -634,29 +682,24 @@ where
   V: Visitor,
 {
   if depth > MAX_DEPTH {
-    return Err(invalid("malformed NAR: nesting too deep"));
+    return Err(NarError::NestingTooDeep.into());
   }
 
-  expect_token(reader, "(")?;
-  expect_token(reader, "type")?;
+  reader.expect_token("(")?;
+  reader.expect_token("type")?;
 
-  match read_padded_token(reader)?.as_slice() {
+  match reader.read_padded_token()?.as_slice() {
     b"regular" => {
       read_regular(reader, visitor)?;
-      expect_token(reader, ")")
+      reader.expect_token(")")
     },
     b"symlink" => {
-      expect_token(reader, "target")?;
-      visitor.visit_symlink(&read_padded_token(reader)?)?;
-      expect_token(reader, ")")
+      reader.expect_token("target")?;
+      visitor.visit_symlink(&reader.read_padded_token()?)?;
+      reader.expect_token(")")
     },
     b"directory" => read_directory(reader, visitor, depth),
-    other => {
-      Err(invalid(format!(
-        "malformed NAR: unknown node type {:?}",
-        String::from_utf8_lossy(other)
-      )))
-    },
+    other => Err(NarError::UnknownNodeType(other.to_vec()).into()),
   }
 }
 
@@ -665,17 +708,23 @@ where
   R: Read + ?Sized,
   V: Visitor,
 {
-  let mut tok = read_padded_token(reader)?;
+  let mut tok = reader.read_padded_token()?;
   let executable = tok == b"executable";
   if executable {
-    expect_token(reader, "")?;
-    tok = read_padded_token(reader)?;
+    reader.expect_token("")?;
+    tok = reader.read_padded_token()?;
   }
   if tok != b"contents" {
-    return Err(invalid("malformed NAR: expected \"contents\""));
+    return Err(
+      NarError::UnexpectedToken {
+        expected: "contents",
+        got:      tok,
+      }
+      .into(),
+    );
   }
 
-  let size = read_u64(reader)?;
+  let size = reader.read_u64()?;
   let mut body = (&mut *reader).take(size);
   visitor.visit_file(executable, size, &mut body)?;
   io::copy(&mut body, &mut io::sink())?;
@@ -683,7 +732,7 @@ where
     return Err(io::ErrorKind::UnexpectedEof.into());
   }
 
-  read_padding(reader, size)
+  reader.read_padding(size)
 }
 
 fn read_directory<R, V>(reader: &mut R, visitor: &mut V, depth: usize) -> io::Result<()>
@@ -693,20 +742,28 @@ where
 {
   visitor.enter_directory()?;
   loop {
-    match read_padded_token(reader)?.as_slice() {
+    match reader.read_padded_token()?.as_slice() {
       b"entry" => {},
       b")" => return visitor.leave_directory(),
-      _ => return Err(invalid("malformed NAR: expected \"entry\" or \")\"")),
+      other => {
+        return Err(
+          NarError::UnexpectedToken {
+            expected: "entry or )",
+            got:      other.to_vec(),
+          }
+          .into(),
+        );
+      },
     }
 
-    expect_token(reader, "(")?;
-    expect_token(reader, "name")?;
-    let name = read_padded_token(reader)?;
-    expect_token(reader, "node")?;
+    reader.expect_token("(")?;
+    reader.expect_token("name")?;
+    let name = reader.read_padded_token()?;
+    reader.expect_token("node")?;
 
     visitor.visit_entry(&name)?;
     read_node(reader, visitor, depth + 1)?;
-    expect_token(reader, ")")?;
+    reader.expect_token(")")?;
   }
 }
 
@@ -788,9 +845,7 @@ where
 {
   let mut builder = TreeBuilder::default();
   read(reader, &mut builder)?;
-  builder
-    .root
-    .ok_or_else(|| invalid("malformed NAR: no root node"))
+  builder.root.ok_or_else(|| NarError::NoRootNode.into())
 }
 
 #[cfg(test)]
