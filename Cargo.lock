@@ -245,6 +245,7 @@ dependencies = [
  "ed25519-dalek",
  "proptest",
  "sha2",
+ "tempfile",
  "thiserror",
 ]
 

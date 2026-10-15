@@ -20,7 +20,7 @@ rules other tools build on, with each concern behind its own feature flag.
 | `narinfo`     | yes     | -                                        | `.narinfo` parse and render                                            |
 | `fingerprint` | yes     | `narinfo`                                | the exact string Nix signs, plus nar-hash normalization and parsing    |
 | `sign`        | yes     | `base64`, `ed25519-dalek`, `fingerprint` | Ed25519 signing and verification in Nix's `name:base64` format         |
-| `nar`         | no      | -                                        | NAR reader, writer, and in-memory tree                                 |
+| `nar`         | no      | -                                        | NAR reader, writer, in-memory tree, and filesystem dump                |
 
 <!--markdownlint-enable MD013-->
 

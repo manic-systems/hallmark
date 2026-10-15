@@ -6,8 +6,9 @@
 //!   [`write_file_nar`]) and [`copy`], which forwards exactly one well-formed
 //!   NAR;
 //! - a streaming writer built from handles ([`open`], [`Node`], [`Directory`])
-//!   that serializes file bodies straight from any reader, and a streaming
-//!   reader driven by a [`Visitor`] ([`read`]);
+//!   that serializes file bodies straight from any reader, [`dump`] which
+//!   archives a filesystem tree through it, and a streaming reader driven by
+//!   a [`Visitor`] ([`read`]);
 //! - an in-memory [`Entry`] tree with [`write_nar`] and [`read_nar`] for when
 //!   holding the whole archive is acceptable.
 //!
@@ -22,6 +23,10 @@
 use std::{
   collections::BTreeMap,
   io::{self, Read, Write},
+};
+#[cfg(unix)] use std::{
+  fs::{self, File},
+  path::Path,
 };
 
 const MAX_TOKEN: usize = 4096;
@@ -433,6 +438,66 @@ fn write_node<W: Write + ?Sized>(
       }
       dir.close()
     },
+  }
+}
+
+/// Serialize the filesystem tree rooted at `path` as a complete NAR to `w`.
+///
+/// File bodies are streamed, so trees of any size are archived without
+/// buffering them. As in Nix, symlinks (including `path` itself) are archived
+/// rather than followed, and a file is executable when its owner-execute bit
+/// is set.
+///
+/// # Errors
+///
+/// Fails on I/O errors, naming the path that could not be read, and with
+/// [`io::ErrorKind::InvalidInput`] for anything other than a regular file,
+/// directory or symlink.
+#[cfg(unix)]
+pub fn dump<W: Write + ?Sized>(w: &mut W, path: &Path) -> io::Result<()> {
+  dump_node(open(w)?, path)
+}
+
+#[cfg(unix)]
+fn dump_node<W: Write + ?Sized>(
+  node: Node<'_, W>,
+  path: &Path,
+) -> io::Result<()> {
+  use std::os::unix::{ffi::OsStrExt, fs::PermissionsExt};
+
+  let at =
+    |e: io::Error| io::Error::new(e.kind(), format!("{}: {e}", path.display()));
+  let file_type = fs::symlink_metadata(path).map_err(at)?.file_type();
+  if file_type.is_symlink() {
+    let target = fs::read_link(path).map_err(at)?;
+    node.symlink(target.as_os_str().as_bytes())
+  } else if file_type.is_file() {
+    let mut file = File::open(path).map_err(at)?;
+    let metadata = file.metadata().map_err(at)?;
+    let executable = metadata.permissions().mode() & 0o100 != 0;
+    node.file(executable, metadata.len(), &mut file)
+  } else if file_type.is_dir() {
+    let mut names = fs::read_dir(path)
+      .and_then(|entries| {
+        entries
+          .map(|entry| entry.map(|e| e.file_name()))
+          .collect::<io::Result<Vec<_>>>()
+      })
+      .map_err(at)?;
+    names.sort_unstable_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+    let mut dir = node.directory()?;
+    for name in names {
+      dump_node(dir.entry(name.as_bytes())?, &path.join(name))?;
+    }
+    dir.close()
+  } else {
+    Err(io::Error::new(
+      io::ErrorKind::InvalidInput,
+      format!(
+        "{}: not a regular file, directory or symlink",
+        path.display()
+      ),
+    ))
   }
 }
 
@@ -869,5 +934,85 @@ mod tests {
     let mut nar = Vec::new();
     write_nar(&mut nar, &sample_tree()).unwrap();
     assert!(read_nar(&mut &nar[..nar.len() - 16]).is_err());
+  }
+
+  #[cfg(unix)]
+  #[test]
+  fn dump_matches_tree_writer() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+
+    let root = tempfile::tempdir().unwrap();
+    let p = root.path();
+    fs::write(p.join("exe"), "#!/bin/sh").unwrap();
+    fs::set_permissions(p.join("exe"), fs::Permissions::from_mode(0o755))
+      .unwrap();
+    symlink("exe", p.join("link")).unwrap();
+    fs::create_dir(p.join("sub")).unwrap();
+    fs::write(p.join("sub/f"), "abc").unwrap();
+
+    let mut dumped = Vec::new();
+    dump(&mut dumped, p).unwrap();
+    let mut expected = Vec::new();
+    write_nar(&mut expected, &sample_tree()).unwrap();
+    assert_eq!(dumped, expected);
+  }
+
+  #[cfg(unix)]
+  #[test]
+  fn dump_sorts_entries_by_bytes() {
+    let root = tempfile::tempdir().unwrap();
+    for name in ["b", "a", "B", "_"] {
+      fs::write(root.path().join(name), name).unwrap();
+    }
+    let mut nar = Vec::new();
+    dump(&mut nar, root.path()).unwrap();
+    let Entry::Directory(entries) = read_nar(&mut nar.as_slice()).unwrap()
+    else {
+      panic!("expected a directory");
+    };
+    let names: Vec<_> = entries.keys().map(Vec::as_slice).collect();
+    assert_eq!(names, [&b"B"[..], b"_", b"a", b"b"]);
+  }
+
+  #[cfg(unix)]
+  #[test]
+  fn dump_archives_root_symlink_and_empty_directory() {
+    let root = tempfile::tempdir().unwrap();
+    let link = root.path().join("link");
+    std::os::unix::fs::symlink("/nonexistent", &link).unwrap();
+    let mut nar = Vec::new();
+    dump(&mut nar, &link).unwrap();
+    assert_eq!(read_nar(&mut nar.as_slice()).unwrap(), Entry::Symlink {
+      target: b"/nonexistent".to_vec(),
+    });
+
+    let empty = root.path().join("empty");
+    fs::create_dir(&empty).unwrap();
+    nar.clear();
+    dump(&mut nar, &empty).unwrap();
+    assert_eq!(
+      read_nar(&mut nar.as_slice()).unwrap(),
+      Entry::Directory(BTreeMap::new())
+    );
+  }
+
+  #[cfg(unix)]
+  #[test]
+  fn dump_rejects_special_files() {
+    let root = tempfile::tempdir().unwrap();
+    let socket = root.path().join("socket");
+    let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    let err = dump(&mut Vec::new(), &socket).unwrap_err();
+    assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+  }
+
+  #[cfg(unix)]
+  #[test]
+  fn dump_names_missing_path() {
+    let root = tempfile::tempdir().unwrap();
+    let missing = root.path().join("missing");
+    let err = dump(&mut Vec::new(), &missing).unwrap_err();
+    assert_eq!(err.kind(), io::ErrorKind::NotFound);
+    assert!(err.to_string().contains(&*missing.to_string_lossy()));
   }
 }
