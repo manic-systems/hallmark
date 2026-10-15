@@ -1,7 +1,11 @@
-/target
+/target/
+
+# Fuzzing
 /fuzz/target
 /fuzz/corpus
 /fuzz/artifacts
 /fuzz/Cargo.lock
-result
-result-*
+
+# Nix
+/.direnv
+/result*
