@@ -302,9 +302,9 @@ pub struct NarInfo {
   pub file_hash:   Option<Hash>,
   /// Byte size of the compressed NAR as served, if advertised.
   pub file_size:   Option<u64>,
-  /// Hash of the uncompressed NAR; part of the signed fingerprint.
+  /// Hash of the uncompressed NAR, part of the signed fingerprint.
   pub nar_hash:    Hash,
-  /// Byte size of the uncompressed NAR; part of the signed fingerprint.
+  /// Byte size of the uncompressed NAR, part of the signed fingerprint.
   pub nar_size:    u64,
   /// Runtime references, in the same store directory as `store_path`.
   pub references:  Vec<StorePath>,

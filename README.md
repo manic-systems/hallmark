@@ -1,7 +1,7 @@
 # hallmark
 
-Pure-Rust Nix binary-cache and store primitives such as, but not limited to
-store paths, `.narinfo`, fingerprints, Ed25519 signing, and NAR archives.
+Pure-Rust Nix binary-cache and store primitives, covering store paths,
+`.narinfo`, fingerprints, Ed25519 signing and NAR archives.
 
 ## Motivation
 
@@ -26,7 +26,7 @@ rules other tools build on, with each concern behind its own feature flag.
 <!--markdownlint-enable MD013-->
 
 > [!NOTE]
-> The `nar` feature is off by default; enable it with:
+> The `nar` feature is off by default. Enable it with:
 >
 > ```toml
 > hallmark = { version = "1.0", features = ["nar"] }
@@ -52,11 +52,14 @@ print!("{info}");
 
 Sign a narinfo with a secret key:
 
-```rust
+```rust,no_run
 use hallmark::{narinfo::NarInfo, sign::SecretKey};
 
-let key = "cache-1:<base64 of 64-byte secret>".parse::<SecretKey>();
-# let _ = key;
+let key = std::fs::read_to_string("cache-1.sec")?.trim().parse::<SecretKey>()?;
+let mut info = std::fs::read_to_string("example.narinfo")?.parse::<NarInfo>()?;
+info.sign(&key);
+print!("{info}");
+# Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
 Build a content-addressed store path (`builtins.toFile "foo" "bar"`):
@@ -69,7 +72,7 @@ assert_eq!(path.as_str(), "/nix/store/vxjiwkjkn7x4079qvh1jkl5pn05j2aw0-foo");
 # Ok::<(), hallmark::store_path::BuildError>(())
 ```
 
-Serialize a file and read a NAR back into a tree (requires `nar`):
+Serialize a file and read the NAR back into a tree (requires `nar`):
 
 ```rust,ignore
 use hallmark::nar::{self, Entry};

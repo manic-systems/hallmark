@@ -145,8 +145,8 @@ impl<'path> StorePathRef<'path> {
   /// # Errors
   ///
   /// Returns [`ParseStorePathError::MissingStoreDir`] if the
-  /// `/nix/store/` prefix is absent; otherwise returns the component errors
-  /// from [`StorePathRef::from_component`].
+  /// `/nix/store/` prefix is absent, or the component errors from
+  /// [`StorePathRef::from_component`].
   pub fn from_absolute_path(path: &'path str) -> Result<Self, ParseStorePathError> {
     let component = path
       .strip_prefix(STORE_DIR_WITH_SLASH)
@@ -179,8 +179,8 @@ impl<'path> StorePathRef<'path> {
     self.digest
   }
 
-  /// The validated string this handle wraps: a full store path from
-  /// [`StorePathRef::from_absolute_path`], or a `<hash>-<name>` component
+  /// The validated string this handle wraps, which is a full store path from
+  /// [`StorePathRef::from_absolute_path`] or a `<hash>-<name>` component
   /// from [`StorePathRef::from_component`].
   #[must_use]
   pub const fn as_str(&self) -> &'path str {
@@ -282,7 +282,7 @@ impl fmt::Display for StorePath {
   }
 }
 
-/// The directory store paths live in: [`STORE_DIR`] unless the store was
+/// The directory store paths live in, [`STORE_DIR`] unless the store was
 /// configured with another location.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct StoreDir {
@@ -328,8 +328,8 @@ impl StoreDir {
   /// # Errors
   ///
   /// Returns [`ParseStorePathError::MissingStoreDir`] if `path` is not
-  /// directly inside this directory; otherwise returns the component errors
-  /// from [`StorePathRef::from_component`].
+  /// directly inside this directory, or the component errors from
+  /// [`StorePathRef::from_component`].
   pub fn parse(&self, path: &str) -> Result<StorePath, ParseStorePathError> {
     let component = path
       .strip_prefix(self.path.as_str())

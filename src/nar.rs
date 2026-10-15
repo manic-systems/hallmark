@@ -1,15 +1,15 @@
 //! The Nix Archive (NAR) format.
 //!
-//! Three layers are available, lowest first:
+//! The API comes in three layers, lowest first.
 //!
-//! - raw framing helpers ([`file_nar_header`], [`file_nar_trailer`],
+//! - Raw framing helpers ([`file_nar_header`], [`file_nar_trailer`],
 //!   [`write_file_nar`]) and [`copy`], which forwards exactly one well-formed
-//!   NAR;
-//! - a streaming writer built from handles ([`open`], [`Node`], [`Directory`])
+//!   NAR.
+//! - A streaming writer built from handles ([`open`], [`Node`], [`Directory`])
 //!   that serializes file bodies straight from any reader, [`dump`] which
 //!   archives a filesystem tree through it, and a streaming reader driven by a
-//!   [`Visitor`] ([`read`]);
-//! - an in-memory [`Entry`] tree with [`write_nar`] and [`read_nar`] for when
+//!   [`Visitor`] ([`read`]).
+//! - An in-memory [`Entry`] tree with [`write_nar`] and [`read_nar`] for when
 //!   holding the whole archive is acceptable.
 //!
 //! A NAR is a stream of length-prefixed byte tokens, each padded with zeros to
@@ -389,8 +389,8 @@ impl<'writer, W: Write + ?Sized> Node<'writer, W> {
 
   /// Write this node as a regular file of `size` bytes streamed from `body`.
   ///
-  /// `size` must be known in advance because it is framed before the content;
-  /// exactly that many bytes are copied from `body`.
+  /// `size` must be known in advance because it is framed before the content.
+  /// Exactly that many bytes are copied from `body`.
   ///
   /// # Errors
   ///
@@ -414,7 +414,7 @@ impl<'writer, W: Write + ?Sized> Node<'writer, W> {
     self.w.write_padded_token(b")")
   }
 
-  /// Begin a directory node; add entries, then call [`Directory::close`].
+  /// Begin a directory node. Add entries, then call [`Directory::close`].
   ///
   /// # Errors
   ///
@@ -439,7 +439,7 @@ pub struct Directory<'writer, W: Write + ?Sized> {
 }
 
 impl<W: Write + ?Sized> Directory<'_, W> {
-  /// Begin an entry named `name`; the returned handle writes its node.
+  /// Begin an entry named `name`, returning the handle that writes its node.
   ///
   /// Names must be supplied in strictly ascending byte order to match the
   /// canonical NAR ordering a reader expects.
@@ -609,7 +609,7 @@ where
 /// Every method has a default no-op body, so an implementation overrides only
 /// the events it needs.
 pub trait Visitor {
-  /// A regular file. `body` yields exactly its byte count; whatever the
+  /// A regular file. `body` yields exactly its byte count, and whatever the
   /// visitor leaves unread is drained by the reader before the walk
   /// continues.
   ///
@@ -638,8 +638,8 @@ pub trait Visitor {
     Ok(())
   }
 
-  /// The name of the next entry in the current directory; its node is
-  /// reported by the calls that follow.
+  /// The name of the next entry in the current directory. The calls that
+  /// follow report its node.
   ///
   /// # Errors
   ///
@@ -833,7 +833,7 @@ impl Visitor for TreeBuilder {
 
 /// Parse a whole NAR from `r` into an [`Entry`] tree.
 ///
-/// File contents are buffered in memory; use [`read`] with a [`Visitor`] to
+/// File contents are buffered in memory. Use [`read`] with a [`Visitor`] to
 /// stream large archives instead.
 ///
 /// # Errors
