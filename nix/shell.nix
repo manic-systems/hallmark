@@ -7,6 +7,7 @@
   wild,
   rust-analyzer,
   cargo-nextest,
+  taplo,
 }: let
   inherit (rustc) llvmPackages;
 in
@@ -24,5 +25,6 @@ in
       rust-analyzer
 
       cargo-nextest
+      taplo
     ];
   }
