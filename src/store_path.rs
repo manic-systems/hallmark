@@ -2,7 +2,7 @@
 //! content-addressed path construction Nix uses for fixed-output derivations,
 //! `builtins.toFile` and `nix-store --add`.
 
-use sha2::{Digest, Sha256};
+use hmac_sha256::Hash;
 use thiserror::Error;
 
 pub use crate::nixbase32;
@@ -402,9 +402,8 @@ fn from_fingerprint_parts(
 ) -> Result<StorePath, BuildError> {
   let fingerprint =
     format!("{ty}:sha256:{}:{STORE_DIR}:{name}", hex_lower(inner_digest));
-  let compressed = compress_hash::<DIGEST_SIZE>(
-    Sha256::digest(fingerprint.as_bytes()).as_slice(),
-  );
+  let compressed =
+    compress_hash::<DIGEST_SIZE>(&Hash::hash(fingerprint.as_bytes()));
   StorePath::from_digest_and_name(&compressed, name).map_err(|source| {
     BuildError::Name {
       name: name.to_owned(),
@@ -444,10 +443,9 @@ pub fn build_ca_path(
       if !references.is_empty() {
         return Err(BuildError::FlatWithReferences);
       }
-      let inner = Sha256::digest(
+      let inner = Hash::hash(
         format!("fixed:out:sha256:{}:", hex_lower(digest)).as_bytes(),
       );
-      let inner: [u8; 32] = inner.into();
       from_fingerprint_parts("output:out", &inner, name)
     },
   }
@@ -463,7 +461,7 @@ pub fn build_text_path(
   content: &[u8],
   references: &[&str],
 ) -> Result<StorePath, BuildError> {
-  let digest: [u8; 32] = Sha256::digest(content).into();
+  let digest = Hash::hash(content);
   build_ca_path(Method::Text, &digest, name, references, false)
 }
 

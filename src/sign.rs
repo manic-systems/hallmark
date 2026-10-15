@@ -1,18 +1,8 @@
 //! Ed25519 signing and verification of narinfo fingerprints, in Nix's
 //! `name:base64` key format.
 
-use base64::{
-  DecodeError,
-  Engine,
-  alphabet,
-  engine::{
-    DecodePaddingMode,
-    GeneralPurpose,
-    GeneralPurposeConfig,
-    general_purpose::STANDARD,
-  },
-};
-use ed25519_dalek::{Signature, Signer, Verifier, VerifyingKey};
+use data_encoding::{BASE64, BASE64_NOPAD, DecodeError};
+use ed25519_compact::Signature;
 use thiserror::Error;
 
 use crate::{fingerprint::fingerprint, narinfo::NarInfo};
@@ -21,11 +11,14 @@ const STORE_DIR: &str = "/nix/store";
 
 /// Nix and tools like `atticd` are inconsistent about trailing `=` padding on
 /// public keys, so decoding must accept both.
-const STANDARD_LENIENT: GeneralPurpose = GeneralPurpose::new(
-  &alphabet::STANDARD,
-  GeneralPurposeConfig::new()
-    .with_decode_padding_mode(DecodePaddingMode::Indifferent),
-);
+fn decode_lenient(b64: &str) -> Result<Vec<u8>, DecodeError> {
+  let encoding = if b64.ends_with('=') {
+    &BASE64
+  } else {
+    &BASE64_NOPAD
+  };
+  encoding.decode(b64.as_bytes())
+}
 
 /// Why a `<name>:<base64>` key string could not be parsed.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -84,7 +77,7 @@ fn split_name(input: &str) -> Result<(&str, &str), KeyError> {
 /// `nix-store --generate-binary-cache-key`: `<name>:<base64 of 64 bytes>`.
 pub struct SecretKey {
   name: String,
-  key:  ed25519_dalek::SigningKey,
+  key:  ed25519_compact::SecretKey,
 }
 
 impl SecretKey {
@@ -97,7 +90,7 @@ impl SecretKey {
   /// Ed25519 signing key.
   pub fn parse(input: &str) -> Result<Self, KeyError> {
     let (name, b64) = split_name(input)?;
-    let raw = STANDARD_LENIENT.decode(b64).map_err(|source| {
+    let raw = decode_lenient(b64).map_err(|source| {
       KeyError::InvalidBase64 {
         input: input.to_owned(),
         source,
@@ -109,12 +102,12 @@ impl SecretKey {
         want: 64,
       }
     })?;
-    let key =
-      ed25519_dalek::SigningKey::from_keypair_bytes(&bytes).map_err(|_| {
-        KeyError::InvalidKey {
-          input: input.to_owned(),
-        }
-      })?;
+    let key = ed25519_compact::SecretKey::new(bytes);
+    key.validate_public_key(&key.public_key()).map_err(|_| {
+      KeyError::InvalidKey {
+        input: input.to_owned(),
+      }
+    })?;
     Ok(Self {
       name: name.to_owned(),
       key,
@@ -130,8 +123,8 @@ impl SecretKey {
   /// The `<name>:<base64>` signature over `fingerprint`.
   #[must_use]
   pub fn sign(&self, fingerprint: &str) -> String {
-    let sig = self.key.sign(fingerprint.as_bytes());
-    format!("{}:{}", self.name, STANDARD.encode(sig.to_bytes()))
+    let sig = self.key.sign(fingerprint, None);
+    format!("{}:{}", self.name, BASE64.encode(sig.as_ref()))
   }
 
   /// The matching public key, for `trusted-public-keys`.
@@ -139,7 +132,7 @@ impl SecretKey {
   pub fn public_key(&self) -> PublicKey {
     PublicKey {
       name: self.name.clone(),
-      key:  self.key.verifying_key(),
+      key:  self.key.public_key(),
     }
   }
 }
@@ -148,7 +141,7 @@ impl SecretKey {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PublicKey {
   name: String,
-  key:  VerifyingKey,
+  key:  ed25519_compact::PublicKey,
 }
 
 impl PublicKey {
@@ -161,7 +154,7 @@ impl PublicKey {
   /// Ed25519 verifying key.
   pub fn parse(input: &str) -> Result<Self, KeyError> {
     let (name, b64) = split_name(input)?;
-    let raw = STANDARD_LENIENT.decode(b64).map_err(|source| {
+    let raw = decode_lenient(b64).map_err(|source| {
       KeyError::InvalidBase64 {
         input: input.to_owned(),
         source,
@@ -173,7 +166,8 @@ impl PublicKey {
         want: 32,
       }
     })?;
-    let key = VerifyingKey::from_bytes(&bytes).map_err(|_| {
+    let key = ed25519_compact::PublicKey::new(bytes);
+    key.validate().map_err(|_| {
       KeyError::InvalidKey {
         input: input.to_owned(),
       }
@@ -201,14 +195,13 @@ impl PublicKey {
       if name != self.name {
         continue;
       }
-      let Ok(raw) = STANDARD_LENIENT.decode(b64) else {
+      let Ok(raw) = decode_lenient(b64) else {
         continue;
       };
-      let Ok(bytes) = <[u8; 64]>::try_from(raw.as_slice()) else {
+      let Ok(signature) = Signature::from_slice(&raw) else {
         continue;
       };
-      let signature = Signature::from_bytes(&bytes);
-      if self.key.verify(fingerprint.as_bytes(), &signature).is_ok() {
+      if self.key.verify(fingerprint, &signature).is_ok() {
         return true;
       }
     }
@@ -218,7 +211,7 @@ impl PublicKey {
   /// Render as the `<name>:<base64>` form used in `trusted-public-keys`.
   #[must_use]
   pub fn to_nix_string(&self) -> String {
-    format!("{}:{}", self.name, STANDARD.encode(self.key.to_bytes()))
+    format!("{}:{}", self.name, BASE64.encode(self.key.as_ref()))
   }
 }
 
@@ -244,9 +237,10 @@ mod tests {
   use super::*;
 
   fn keypair(seed: [u8; 32], name: &str) -> SecretKey {
-    let signing = ed25519_dalek::SigningKey::from_bytes(&seed);
-    let keypair = signing.to_keypair_bytes();
-    SecretKey::parse(&format!("{name}:{}", STANDARD.encode(keypair))).unwrap()
+    let keypair =
+      ed25519_compact::KeyPair::from_seed(ed25519_compact::Seed::new(seed));
+    SecretKey::parse(&format!("{name}:{}", BASE64.encode(keypair.sk.as_ref())))
+      .unwrap()
   }
 
   fn sample() -> NarInfo {
