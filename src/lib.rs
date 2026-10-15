@@ -11,6 +11,8 @@ pub mod nixbase32;
 
 #[cfg(feature = "fingerprint")] pub mod fingerprint;
 
+#[cfg(feature = "sign")] pub mod base64;
+
 #[cfg(feature = "sign")] pub mod sign;
 
 #[cfg(feature = "nar")] pub mod nar;

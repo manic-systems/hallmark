@@ -1,24 +1,17 @@
 //! Ed25519 signing and verification of narinfo fingerprints, in Nix's
 //! `name:base64` key format.
 
-use data_encoding::{BASE64, BASE64_NOPAD, DecodeError};
 use ed25519_compact::Signature;
 use thiserror::Error;
 
-use crate::{fingerprint::fingerprint, narinfo::NarInfo};
+use crate::{
+  base64,
+  base64::DecodeError,
+  fingerprint::fingerprint,
+  narinfo::NarInfo,
+};
 
 const STORE_DIR: &str = "/nix/store";
-
-/// Nix and tools like `atticd` are inconsistent about trailing `=` padding on
-/// public keys, so decoding must accept both.
-fn decode_lenient(b64: &str) -> Result<Vec<u8>, DecodeError> {
-  let encoding = if b64.ends_with('=') {
-    &BASE64
-  } else {
-    &BASE64_NOPAD
-  };
-  encoding.decode(b64.as_bytes())
-}
 
 /// Why a `<name>:<base64>` key string could not be parsed.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -90,7 +83,7 @@ impl SecretKey {
   /// Ed25519 signing key.
   pub fn parse(input: &str) -> Result<Self, KeyError> {
     let (name, b64) = split_name(input)?;
-    let raw = decode_lenient(b64).map_err(|source| {
+    let raw = base64::decode(b64).map_err(|source| {
       KeyError::InvalidBase64 {
         input: input.to_owned(),
         source,
@@ -124,7 +117,7 @@ impl SecretKey {
   #[must_use]
   pub fn sign(&self, fingerprint: &str) -> String {
     let sig = self.key.sign(fingerprint, None);
-    format!("{}:{}", self.name, BASE64.encode(sig.as_ref()))
+    format!("{}:{}", self.name, base64::encode(sig.as_ref()))
   }
 
   /// The matching public key, for `trusted-public-keys`.
@@ -154,7 +147,7 @@ impl PublicKey {
   /// Ed25519 verifying key.
   pub fn parse(input: &str) -> Result<Self, KeyError> {
     let (name, b64) = split_name(input)?;
-    let raw = decode_lenient(b64).map_err(|source| {
+    let raw = base64::decode(b64).map_err(|source| {
       KeyError::InvalidBase64 {
         input: input.to_owned(),
         source,
@@ -195,7 +188,7 @@ impl PublicKey {
       if name != self.name {
         continue;
       }
-      let Ok(raw) = decode_lenient(b64) else {
+      let Ok(raw) = base64::decode(b64) else {
         continue;
       };
       let Ok(signature) = Signature::from_slice(&raw) else {
@@ -211,7 +204,7 @@ impl PublicKey {
   /// Render as the `<name>:<base64>` form used in `trusted-public-keys`.
   #[must_use]
   pub fn to_nix_string(&self) -> String {
-    format!("{}:{}", self.name, BASE64.encode(self.key.as_ref()))
+    format!("{}:{}", self.name, base64::encode(self.key.as_ref()))
   }
 }
 
@@ -239,7 +232,7 @@ mod tests {
   fn keypair(seed: [u8; 32], name: &str) -> SecretKey {
     let keypair =
       ed25519_compact::KeyPair::from_seed(ed25519_compact::Seed::new(seed));
-    SecretKey::parse(&format!("{name}:{}", BASE64.encode(keypair.sk.as_ref())))
+    SecretKey::parse(&format!("{name}:{}", base64::encode(keypair.sk.as_ref())))
       .unwrap()
   }
 
