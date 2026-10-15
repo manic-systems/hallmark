@@ -2,7 +2,7 @@
   lib,
   rustPlatform,
 }:
-rustPlatform.buildRustPackage (finalAttrs: {
+rustPlatform.buildRustPackage {
   pname = "hallmark";
   version = "1.0.0";
   src = let
@@ -21,5 +21,5 @@ rustPlatform.buildRustPackage (finalAttrs: {
       ];
     };
 
-  cargoLock.lockFile = "${finalAttrs.src}/Cargo.lock";
-})
+  cargoLock.lockFile = ../Cargo.lock;
+}
