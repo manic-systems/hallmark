@@ -13,7 +13,7 @@ use std::{
   str::FromStr,
 };
 
-use thiserror::Error;
+use flub::Error;
 
 use crate::{
   base64,

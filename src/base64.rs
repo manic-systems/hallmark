@@ -1,7 +1,7 @@
 //! RFC 4648 base64 with the standard alphabet, as used for Nix signing keys
 //! and signatures.
 
-use thiserror::Error;
+use flub::Error;
 
 const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 

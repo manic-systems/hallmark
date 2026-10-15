@@ -7,8 +7,8 @@ use std::{
   str::FromStr,
 };
 
+use flub::Error;
 use hmac_sha256::Hash as Sha256;
-use thiserror::Error;
 
 use crate::{
   hash::{

@@ -6,7 +6,7 @@ use std::{
   str::FromStr,
 };
 
-use thiserror::Error;
+use flub::Error;
 
 use crate::{
   base64,
@@ -84,7 +84,7 @@ pub enum ParseHashError {
   #[error("invalid base64 digest")]
   Base64(#[source] base64::DecodeError),
   /// The decoded digest has the wrong length for its algorithm.
-  #[error("{algorithm} digest has {got} bytes, want {}", algorithm.digest_len())]
+  #[error("{algorithm} digest has {got} bytes, want {}", .algorithm.digest_len())]
   Length {
     /// The algorithm named by the prefix.
     algorithm: Algorithm,

@@ -2,7 +2,7 @@
 //! digits are emitted most-significant-first, so a 20-byte store-path digest
 //! encodes to 32 characters and a 32-byte hash to 52.
 
-use thiserror::Error;
+use flub::Error;
 
 const ALPHABET: &[u8; 32] = b"0123456789abcdfghijklmnpqrsvwxyz";
 

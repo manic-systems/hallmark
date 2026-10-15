@@ -39,7 +39,7 @@ use std::{
   path::Path,
 };
 
-use thiserror::Error;
+use flub::Error;
 
 const MAX_TOKEN: usize = 4096;
 
