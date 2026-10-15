@@ -20,4 +20,4 @@ pub use narinfo::{NarInfo, NarInfoError};
 #[cfg(feature = "sign")]
 pub use sign::{KeyError, PublicKey, SecretKey};
 #[cfg(feature = "store_path")]
-pub use store_path::{Method, StorePath, StorePathRef};
+pub use store_path::{Method, StoreDir, StorePath, StorePathRef};

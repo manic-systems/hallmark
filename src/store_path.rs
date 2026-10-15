@@ -33,9 +33,17 @@ pub enum ParseStorePathError {
   /// The name contains a byte outside the allowed store-path alphabet.
   #[error("invalid name")]
   Name,
-  /// The path does not begin with [`STORE_DIR_WITH_SLASH`].
-  #[error("missing /nix/store prefix")]
+  /// The path is not directly inside the expected store directory.
+  #[error("path is not in the store directory")]
   MissingStoreDir,
+}
+
+/// Why a string cannot be used as a store directory.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[error("store directory {path:?} is not a canonical absolute path")]
+pub struct StoreDirError {
+  /// The rejected directory.
+  pub path: String,
 }
 
 /// Why a content-addressed store path could not be constructed.
@@ -172,8 +180,8 @@ impl<'a> StorePathRef<'a> {
   fn component(&self) -> &'a str {
     self
       .path
-      .strip_prefix(STORE_DIR_WITH_SLASH)
-      .unwrap_or(self.path)
+      .rsplit_once('/')
+      .map_or(self.path, |(_, component)| component)
   }
 
   /// Copy into an owning [`StorePath`].
@@ -249,6 +257,77 @@ impl StorePath {
 }
 
 impl std::fmt::Display for StorePath {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.write_str(&self.path)
+  }
+}
+
+/// The directory store paths live in: [`STORE_DIR`] unless the store was
+/// configured with another location.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct StoreDir {
+  path: String,
+}
+
+impl StoreDir {
+  /// Use `path` as the store directory.
+  ///
+  /// Nix compares store paths textually, so the directory must be spelled
+  /// canonically for paths under it to match.
+  ///
+  /// # Errors
+  ///
+  /// Returns [`StoreDirError`] unless `path` is absolute, has no trailing
+  /// slash, and has no empty, `.` or `..` components.
+  pub fn new(path: impl Into<String>) -> Result<Self, StoreDirError> {
+    let path = path.into();
+    let canonical = path.strip_prefix('/').is_some_and(|rest| {
+      rest
+        .split('/')
+        .all(|component| !matches!(component, "" | "." | ".."))
+    });
+    if canonical {
+      Ok(Self { path })
+    } else {
+      Err(StoreDirError { path })
+    }
+  }
+
+  /// The directory, without a trailing slash.
+  #[must_use]
+  pub fn as_str(&self) -> &str {
+    &self.path
+  }
+
+  /// Validate `path` as a `<hash>-<name>` entry directly inside this
+  /// directory.
+  ///
+  /// # Errors
+  ///
+  /// Returns [`ParseStorePathError::MissingStoreDir`] if `path` is not
+  /// directly inside this directory; otherwise returns the component errors
+  /// from [`StorePathRef::from_bytes`].
+  pub fn parse(&self, path: &str) -> Result<StorePath, ParseStorePathError> {
+    let component = path
+      .strip_prefix(self.path.as_str())
+      .and_then(|rest| rest.strip_prefix('/'))
+      .ok_or(ParseStorePathError::MissingStoreDir)?;
+    validate_component(component)?;
+    Ok(StorePath {
+      path: path.to_owned(),
+    })
+  }
+}
+
+impl Default for StoreDir {
+  fn default() -> Self {
+    Self {
+      path: STORE_DIR.to_owned(),
+    }
+  }
+}
+
+impl std::fmt::Display for StoreDir {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     f.write_str(&self.path)
   }
@@ -429,6 +508,58 @@ mod tests {
       StorePath::parse("/nix/store/00bgd045z0d4icpbc2yyz4gx48ak44la-net/tools")
         .is_err()
     );
+  }
+
+  #[test]
+  fn parse_in_custom_store_dir() {
+    let dir = StoreDir::new("/var/lib/nix/store").unwrap();
+    let p = dir
+      .parse("/var/lib/nix/store/00bgd045z0d4icpbc2yyz4gx48ak44la-net-tools")
+      .unwrap();
+    assert_eq!(p.hash(), "00bgd045z0d4icpbc2yyz4gx48ak44la");
+    assert_eq!(p.name(), "net-tools");
+    assert_eq!(
+      p.as_str(),
+      "/var/lib/nix/store/00bgd045z0d4icpbc2yyz4gx48ak44la-net-tools"
+    );
+  }
+
+  #[test]
+  fn parse_outside_store_dir_rejected() {
+    let dir = StoreDir::new("/var/lib/nix/store").unwrap();
+    for path in [
+      "/nix/store/00bgd045z0d4icpbc2yyz4gx48ak44la-net-tools",
+      "/var/lib/nix/storex/00bgd045z0d4icpbc2yyz4gx48ak44la-net-tools",
+      "/var/lib/nix/store/sub/00bgd045z0d4icpbc2yyz4gx48ak44la-net-tools",
+    ] {
+      assert!(dir.parse(path).is_err(), "{path}");
+    }
+    assert_eq!(
+      StoreDir::default().parse("/var/lib/nix/store/x"),
+      Err(ParseStorePathError::MissingStoreDir)
+    );
+  }
+
+  #[test]
+  fn default_store_dir_matches_parse() {
+    let path = "/nix/store/00bgd045z0d4icpbc2yyz4gx48ak44la-net-tools";
+    assert_eq!(StoreDir::default().as_str(), STORE_DIR);
+    assert_eq!(StoreDir::default().parse(path), StorePath::parse(path));
+  }
+
+  #[test]
+  fn non_canonical_store_dir_rejected() {
+    for dir in [
+      "",
+      "/",
+      "nix/store",
+      "/nix/store/",
+      "/nix//store",
+      "/nix/./store",
+      "/nix/../store",
+    ] {
+      assert!(StoreDir::new(dir).is_err(), "{dir:?}");
+    }
   }
 
   #[test]
