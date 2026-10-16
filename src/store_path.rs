@@ -427,6 +427,25 @@ impl FromStr for ContentAddress {
   }
 }
 
+impl ContentAddress {
+  /// Nix's `makeFixedOutputPath` for a path without references.
+  ///
+  /// # Errors
+  ///
+  /// Returns [`BuildError`] if `name` is not a valid store-path name.
+  pub fn store_path(&self, name: &str) -> Result<StorePath, BuildError> {
+    let (prefix, hash) = match *self {
+      Self::Text(sha256) => return make_store_path("text", &sha256, name),
+      Self::Recursive(Hash::Sha256(sha256)) => return make_store_path("source", &sha256, name),
+      Self::Flat(hash) => ("", hash),
+      Self::Recursive(hash) => ("r:", hash),
+    };
+    let inner =
+      Sha256::hash(format!("fixed:out:{prefix}{}:{hash:x}:", hash.algorithm()).as_bytes());
+    make_store_path("output:out", &inner, name)
+  }
+}
+
 impl fmt::Display for ContentAddress {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     match *self {
@@ -485,19 +504,15 @@ impl ContentAddressed<'_> {
   pub fn store_path(&self, name: &str) -> Result<StorePath, BuildError> {
     match *self {
       Self::Text { sha256, references } => {
-        from_fingerprint_parts(&format_references("text", references, false), &sha256, name)
+        make_store_path(&format_references("text", references, false), &sha256, name)
       },
-      Self::Flat { sha256 } => {
-        let inner =
-          Sha256::hash(format!("fixed:out:sha256:{:x}:", Hash::Sha256(sha256)).as_bytes());
-        from_fingerprint_parts("output:out", &inner, name)
-      },
+      Self::Flat { sha256 } => ContentAddress::Flat(Hash::Sha256(sha256)).store_path(name),
       Self::Recursive {
         sha256,
         references,
         self_ref,
       } => {
-        from_fingerprint_parts(
+        make_store_path(
           &format_references("source", references, self_ref),
           &sha256,
           name,
@@ -507,7 +522,9 @@ impl ContentAddressed<'_> {
   }
 }
 
-fn compress_hash<const N: usize>(input: &[u8]) -> [u8; N] {
+/// Nix's `compressHash`, folding `input` into `N` bytes by XOR.
+#[must_use]
+pub fn compress_hash<const N: usize>(input: &[u8]) -> [u8; N] {
   let mut out = [0_u8; N];
   for (index, &byte) in input.iter().enumerate() {
     out[index % N] ^= byte;
@@ -527,7 +544,12 @@ fn format_references(ty: &str, references: &[StorePath], has_self_ref: bool) -> 
   out
 }
 
-fn from_fingerprint_parts(
+/// Nix's `makeStorePath`, with references already appended to `ty`.
+///
+/// # Errors
+///
+/// Returns [`BuildError`] if `name` is not a valid store-path name.
+pub fn make_store_path(
   ty: &str,
   inner_digest: &[u8; 32],
   name: &str,
