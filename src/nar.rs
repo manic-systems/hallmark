@@ -82,6 +82,9 @@ pub enum NarError {
   /// A path that is neither a regular file, a directory, nor a symlink.
   #[error("{}: not a regular file, directory or symlink", .0.display())]
   UnsupportedFileType(PathBuf),
+  /// A file that grew or shrank while it was being archived.
+  #[error("{}: changed size while archived", .0.display())]
+  SizeChanged(PathBuf),
 }
 
 impl NarError {
@@ -92,7 +95,8 @@ impl NarError {
       | Self::UnexpectedToken { .. }
       | Self::UnknownNodeType(_)
       | Self::NestingTooDeep
-      | Self::NoRootNode => io::ErrorKind::InvalidData,
+      | Self::NoRootNode
+      | Self::SizeChanged(_) => io::ErrorKind::InvalidData,
       Self::InvalidEntryName | Self::UnsortedEntries | Self::UnsupportedFileType(_) => {
         io::ErrorKind::InvalidInput
       },
@@ -397,6 +401,14 @@ impl<'writer, W: Write + ?Sized> Node<'writer, W> {
   /// Propagates I/O errors, and fails with [`io::ErrorKind::UnexpectedEof`]
   /// if `body` yields fewer than `size` bytes.
   pub fn file(self, executable: bool, size: u64, body: &mut dyn Read) -> io::Result<()> {
+    if self.copy_file(executable, size, body)? == size {
+      Ok(())
+    } else {
+      Err(io::ErrorKind::UnexpectedEof.into())
+    }
+  }
+
+  fn copy_file(self, executable: bool, size: u64, body: &mut dyn Read) -> io::Result<u64> {
     self.w.write_padded_token(b"(")?;
     self.w.write_padded_token(b"type")?;
     self.w.write_padded_token(b"regular")?;
@@ -407,11 +419,11 @@ impl<'writer, W: Write + ?Sized> Node<'writer, W> {
     self.w.write_padded_token(b"contents")?;
     self.w.write_u64(size)?;
     let copied = io::copy(&mut body.take(size), self.w)?;
-    if copied != size {
-      return Err(io::ErrorKind::UnexpectedEof.into());
+    if copied == size {
+      self.w.write_all(&[0_u8; 8][..pad_len(size)])?;
+      self.w.write_padded_token(b")")?;
     }
-    self.w.write_all(&[0_u8; 8][..pad_len(size)])?;
-    self.w.write_padded_token(b")")
+    Ok(copied)
   }
 
   /// Begin a directory node. Add entries, then call [`Directory::close`].
@@ -601,7 +613,11 @@ where
   let mut file = File::open(path).map_err(with_path)?;
   let metadata = file.metadata().map_err(with_path)?;
   let executable = metadata.permissions().mode() & 0o100 != 0;
-  node.file(executable, metadata.len(), &mut file)
+  let copied = node.copy_file(executable, metadata.len(), &mut file)?;
+  if copied != metadata.len() || file.read(&mut [0_u8; 1]).map_err(with_path)? != 0 {
+    return Err(NarError::SizeChanged(path.to_path_buf()).into());
+  }
+  Ok(())
 }
 
 /// Receives the nodes of a NAR as [`read`] walks it.
@@ -1083,6 +1099,46 @@ mod tests {
     let _listener = UnixListener::bind(&socket).unwrap();
     let err = dump(&mut Vec::new(), &socket).unwrap_err();
     assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+  }
+
+  #[cfg(unix)]
+  #[test]
+  fn dump_rejects_file_that_changes_size() {
+    struct Resize<'path> {
+      path: &'path Path,
+      len:  u64,
+      out:  Vec<u8>,
+    }
+
+    impl Write for Resize<'_> {
+      fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        if buf == b"contents" {
+          File::options()
+            .write(true)
+            .open(self.path)?
+            .set_len(self.len)?;
+        }
+        self.out.write(buf)
+      }
+
+      fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+      }
+    }
+
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("file");
+    for len in [3, 16] {
+      fs::write(&path, b"12345678").unwrap();
+      let mut resize = Resize {
+        path: &path,
+        len,
+        out: Vec::new(),
+      };
+      let err = dump(&mut resize, &path).unwrap_err();
+      assert_eq!(err.kind(), io::ErrorKind::InvalidData, "{len}");
+      assert!(err.to_string().contains("changed size"), "{len}");
+    }
   }
 
   #[cfg(unix)]
