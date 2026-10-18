@@ -7,7 +7,7 @@ edition      = "2024"
 license      = "EUPL-1.2"
 repository   = "https://github.com/manic-systems/hallmark"
 rust-version = "1.95.0"
-version      = "1.0.0"
+version      = "1.1.0"
 include      = [ "src", "README.md", "LICENSE" ]
 
 [features]

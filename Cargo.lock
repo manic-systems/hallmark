@@ -164,7 +164,7 @@ dependencies = [
 
 [[package]]
 name = "hallmark"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "ed25519-compact",
  "flub",
