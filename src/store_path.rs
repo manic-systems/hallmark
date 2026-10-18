@@ -215,17 +215,6 @@ impl FromStr for StorePath {
 }
 
 impl StorePath {
-  fn from_digest_and_name(
-    digest: &[u8; DIGEST_SIZE],
-    name: &str,
-  ) -> Result<Self, ParseStorePathError> {
-    validate_name(name)?;
-    Ok(Self {
-      path:   format!("{STORE_DIR_WITH_SLASH}{}-{name}", nixbase32::encode(digest)),
-      digest: *digest,
-    })
-  }
-
   /// A borrowing view of this path.
   #[must_use]
   pub fn as_path_ref(&self) -> StorePathRef<'_> {
@@ -355,6 +344,36 @@ impl StoreDir {
       digest,
     })
   }
+
+  /// Nix's `makeStorePath` in this directory, with references already
+  /// appended to `ty`.
+  ///
+  /// # Errors
+  ///
+  /// Returns [`BuildError`] if `name` is not a valid store-path name.
+  pub fn make_store_path(
+    &self,
+    ty: &str,
+    inner_digest: &[u8; 32],
+    name: &str,
+  ) -> Result<StorePath, BuildError> {
+    validate_name(name).map_err(|source| {
+      BuildError {
+        name: name.to_owned(),
+        source,
+      }
+    })?;
+    let fingerprint = format!(
+      "{ty}:sha256:{:x}:{}:{name}",
+      Hash::Sha256(*inner_digest),
+      self.path
+    );
+    let digest = compress_hash::<DIGEST_SIZE>(&Sha256::hash(fingerprint.as_bytes()));
+    Ok(StorePath {
+      path: format!("{}/{}-{name}", self.path, nixbase32::encode(&digest)),
+      digest,
+    })
+  }
 }
 
 impl FromStr for StoreDir {
@@ -434,15 +453,26 @@ impl ContentAddress {
   ///
   /// Returns [`BuildError`] if `name` is not a valid store-path name.
   pub fn store_path(&self, name: &str) -> Result<StorePath, BuildError> {
+    self.store_path_in(&StoreDir::default(), name)
+  }
+
+  /// [`ContentAddress::store_path`] in the store directory `dir`.
+  ///
+  /// # Errors
+  ///
+  /// Returns [`BuildError`] if `name` is not a valid store-path name.
+  pub fn store_path_in(&self, dir: &StoreDir, name: &str) -> Result<StorePath, BuildError> {
     let (prefix, hash) = match *self {
-      Self::Text(sha256) => return make_store_path("text", &sha256, name),
-      Self::Recursive(Hash::Sha256(sha256)) => return make_store_path("source", &sha256, name),
+      Self::Text(sha256) => return dir.make_store_path("text", &sha256, name),
+      Self::Recursive(Hash::Sha256(sha256)) => {
+        return dir.make_store_path("source", &sha256, name);
+      },
       Self::Flat(hash) => ("", hash),
       Self::Recursive(hash) => ("r:", hash),
     };
     let inner =
       Sha256::hash(format!("fixed:out:{prefix}{}:{hash:x}:", hash.algorithm()).as_bytes());
-    make_store_path("output:out", &inner, name)
+    dir.make_store_path("output:out", &inner, name)
   }
 }
 
@@ -502,17 +532,26 @@ impl ContentAddressed<'_> {
   ///
   /// Returns [`BuildError`] if `name` is not a valid store-path name.
   pub fn store_path(&self, name: &str) -> Result<StorePath, BuildError> {
+    self.store_path_in(&StoreDir::default(), name)
+  }
+
+  /// [`ContentAddressed::store_path`] in the store directory `dir`.
+  ///
+  /// # Errors
+  ///
+  /// Returns [`BuildError`] if `name` is not a valid store-path name.
+  pub fn store_path_in(&self, dir: &StoreDir, name: &str) -> Result<StorePath, BuildError> {
     match *self {
       Self::Text { sha256, references } => {
-        make_store_path(&format_references("text", references, false), &sha256, name)
+        dir.make_store_path(&format_references("text", references, false), &sha256, name)
       },
-      Self::Flat { sha256 } => ContentAddress::Flat(Hash::Sha256(sha256)).store_path(name),
+      Self::Flat { sha256 } => ContentAddress::Flat(Hash::Sha256(sha256)).store_path_in(dir, name),
       Self::Recursive {
         sha256,
         references,
         self_ref,
       } => {
-        make_store_path(
+        dir.make_store_path(
           &format_references("source", references, self_ref),
           &sha256,
           name,
@@ -544,7 +583,7 @@ fn format_references(ty: &str, references: &[StorePath], has_self_ref: bool) -> 
   out
 }
 
-/// Nix's `makeStorePath`, with references already appended to `ty`.
+/// [`StoreDir::make_store_path`] in [`STORE_DIR`].
 ///
 /// # Errors
 ///
@@ -554,17 +593,7 @@ pub fn make_store_path(
   inner_digest: &[u8; 32],
   name: &str,
 ) -> Result<StorePath, BuildError> {
-  let fingerprint = format!(
-    "{ty}:sha256:{:x}:{STORE_DIR}:{name}",
-    Hash::Sha256(*inner_digest)
-  );
-  let compressed = compress_hash::<DIGEST_SIZE>(&Sha256::hash(fingerprint.as_bytes()));
-  StorePath::from_digest_and_name(&compressed, name).map_err(|source| {
-    BuildError {
-      name: name.to_owned(),
-      source,
-    }
-  })
+  StoreDir::default().make_store_path(ty, inner_digest, name)
 }
 
 /// Build a `text:sha256` store path from file contents.
